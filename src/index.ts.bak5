@@ -251,71 +251,43 @@ function sleep(ms: number): Promise<void> {
 // 这是解决"几十个 3ms 块"问题的根治方法。
 // OpenCode 上游看到每个 reasoning_content delta 都会触发新的 ReasoningPart，
 // 即使 finish_reason 修了也没用——必须让 OpenCode 只看到一个完整的 reasoning 块。
-// ============================================================================
-// SSE 处理核心（v3 - 无死锁设计）
-// ----------------------------------------------------------------------------
-// 重要教训：ReadableStream 的 pull() 只在「消费者请求数据且内部队列空」时被调用。
-// 任何「把数据攒起来、等时间到了再 enqueue」的缓冲逻辑都会死锁——因为攒起来但
-// 没 enqueue 时，队列为空，下游 read() 永远 pending，pull() 不会被再次调用。
-// 因此这里的设计铁律：
-//   1. 每次 pull() 读到的数据，在本次调用内全部处理完并 enqueue，绝不留给下次
-//   2. reasoning 合并只按「字符数阈值」分批，不按时间——数据流动就一定会触发 flush
-//   3. content / tool_calls / finish 出现时，先把残余 reasoning flush 成独立 chunk
-//      （OpenCode 上游 Lifecycle id="reasoning-0" 会把所有 reasoning delta 拼接
-//        成一段完整思考，不会切碎）
-// ============================================================================
-
 type MergeState = {
   reasoningBuffer: string;
   totalChunksIn: number;
   totalChunksOut: number;
   reasoningFlushed: boolean;
-  totalRawBytes: number;
-  streamStartMs: number;
-  // 日志收敛标记：heartbeat flush 只在首次打 info，后续静默（原每 2s 一条会刷屏）
-  heartbeatLogged: boolean;
 };
 
-// reasoning 分批阈值：每累积约 400 字符就 flush 一个 reasoning delta chunk。
-// 太大 → 下游长时间无数据（可能被误判超时）；太小 → flush 太碎。
-// 400 字符约等于正常模型 1-3 秒的思考输出，平衡流式感与开销。
-const REASONING_BATCH_CHARS = 400;
+// OpenAI 终止原因全集。任何一种都视为 stream 结束信号。
+// 参考 OpenAI 文档：stop / length / tool_calls / content_filter / function_call
+const TERMINAL_REASONS: ReadonlySet<string> = new Set([
+  "stop",
+  "length",
+  "tool_calls",
+  "content_filter",
+  "function_call",
+]);
 
-// 版本标识 — 每次 tsc build 时计算新的时间戳
-// ============================================================================
-// 版本标识（固定常量，不再用运行时 Date —— 之前运行时生成导致无法区分
-// "磁盘产物是不是最新编译"，每次启动都不同，日志误导判断）
-// 铁律：每次修改代码逻辑后，必须手动 bump 下面这个版本号！
-//   v3.1 = 首次固定版本号机制
-//   v3.2 = 修复 SSE 事件分隔符 bug（\n → \n\n，之前导致两个 JSON 拼接解析失败）
-//   v3.2.1 = 空行跳过（原始 SSE 空行分隔由每行自带 \n\n 承担，避免双空行 + ratio 虚高）
-const FORK_VERSION = "3.4.0";
-const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
-
-function buildReasoningChunk(reasoningText: string): string {
-  const rcObj = {
-    id: "codebuddy-reasoning-flush",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model: "codebuddy",
-    choices: [
-      {
-        index: 0,
-        delta: { reasoning_content: reasoningText },
-        finish_reason: null,
-      },
-    ],
-  };
-  return "data: " + JSON.stringify(rcObj);
-}
-
-// 处理单个 SSE data: 行。返回要 enqueue 的 SSE 行数组（可空）。
-// 副作用：可能向 state.reasoningBuffer 累积 reasoning_content。
+// 处理单个 SSE data: 行，返回 0/1 个输出行
+// 可能 0（reasoning-only delta 被丢弃）或 1（普通 chunk / flush 当前 chunk）
 function processSseDataLine(line: string, state: MergeState): string[] {
   // 只处理 data: {...} 行；其他 SSE 行（event:/id:/retry:/空行/注释）原样返回
   if (!line.startsWith("data:")) return [line];
   const payload = line.slice(5).replace(/^\s/, ""); // 去前导空格
-  if (payload === "" || payload === "[DONE]") return [line];
+
+  // data: [DONE] 是 OpenAI 的 stream 结束标记，遇到它要 flush 未发送的 reasoning
+  if (payload === "[DONE]") {
+    if (state.reasoningBuffer.length > 0) {
+      const flushChunk = buildFlushChunk(state.reasoningBuffer);
+      state.reasoningBuffer = "";
+      state.reasoningFlushed = true;
+      state.totalChunksOut++;
+      return ["data: " + JSON.stringify(flushChunk), line];
+    }
+    return [line];
+  }
+
+  if (payload === "") return [line];
 
   let obj: Record<string, unknown>;
   try {
@@ -327,8 +299,8 @@ function processSseDataLine(line: string, state: MergeState): string[] {
   state.totalChunksIn++;
 
   // 字段规范化
-  // 1. finish_reason: "" -> null （CodeBuddy 网关非标准行为，OpenCode 会把 "" 误判为终止）
-  // 2. 剥离 null/empty 非标准字段
+  // 1. finish_reason: "" -> null（CodeBuddy 网关的非标准行为）
+  // 2. 剥离 null/empty 非标准字段 (function_call / refusal / tool_calls / extra_fields)
   const choices = Array.isArray(obj.choices) ? (obj.choices as Array<Record<string, unknown>>) : [];
   for (const choice of choices) {
     if (choice.finish_reason === "") choice.finish_reason = null;
@@ -343,53 +315,69 @@ function processSseDataLine(line: string, state: MergeState): string[] {
 
   if (choices.length === 0) return ["data: " + JSON.stringify(obj)];
 
+  // 处理 delta 累积
   const firstChoice = choices[0];
   const delta = (firstChoice.delta || {}) as Record<string, unknown>;
   const finishReason = firstChoice.finish_reason as string | null | undefined;
 
-  // 1. 把 reasoning_content 抽到 buffer，从原 delta 移除
+  // 1. 累积 reasoning_content（保留原 delta 里的值，等下注入回当前 chunk）
   const reasoningChunk = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
   if (reasoningChunk.length > 0) {
     state.reasoningBuffer += reasoningChunk;
-    delete delta.reasoning_content;
   }
 
+  // 2. 判断触发 flush 的条件
   const hasContent = typeof delta.content === "string" && delta.content.length > 0;
   const hasToolCalls = Array.isArray(delta.tool_calls) && (delta.tool_calls as unknown[]).length > 0;
-  const isTerminal = finishReason === "stop" || finishReason === "length";
+  const isTerminalReason = typeof finishReason === "string" && TERMINAL_REASONS.has(finishReason);
 
-  const out: string[] = [];
-
-  // 2. 触发点：content / tool_calls / stop / length 出现
-  //    → 先 flush 残余 reasoning（独立 chunk），再发当前 chunk
-  if (hasContent || hasToolCalls || isTerminal) {
-    if (state.reasoningBuffer.length > 0) {
-      out.push(buildReasoningChunk(state.reasoningBuffer));
-      state.reasoningBuffer = "";
-      state.reasoningFlushed = true;
-    }
-    out.push("data: " + JSON.stringify(obj));
-    return out;
-  }
-
-  // 3. 纯 reasoning-only / role-only delta：
-  //    - 若累积已达阈值 → flush 成 reasoning delta chunk
-  //    - 否则不返回（等累积）
-  if (state.reasoningBuffer.length >= REASONING_BATCH_CHARS) {
-    out.push(buildReasoningChunk(state.reasoningBuffer));
+  if ((hasContent || hasToolCalls || isTerminalReason) && state.reasoningBuffer.length > 0) {
+    // 把累积的 reasoning 注入当前 chunk 的 delta。
+    // OpenCode 上游只看到一个 delta，delta.reasoning_content 是完整累积。
+    delta.reasoning_content = state.reasoningBuffer;
     state.reasoningBuffer = "";
     state.reasoningFlushed = true;
+    state.totalChunksOut++;
+    return ["data: " + JSON.stringify(obj)];
   }
-  return out;
+
+  // 3. 还没到 flush 时机：
+  //    - 如果这个 delta 完全是 reasoning-only（无 content / 无 tool_calls / 非终止原因）→ 丢弃
+  //    - 否则（如 role-only delta）原样发出
+  const isPureReasoningDelta =
+    reasoningChunk.length > 0 && !hasContent && !hasToolCalls && !isTerminalReason;
+  if (isPureReasoningDelta && choices.length === 1) {
+    // 纯 reasoning-only delta，丢弃
+    return [];
+  }
+
+  state.totalChunksOut++;
+  return ["data: " + JSON.stringify(obj)];
 }
 
-// reasoning 定时心跳 flush 参数
-// 目的：防止"长时间零输出"被误判为卡死。thinking 很慢时，即使累积不到
-// REASONING_BATCH_CHARS(400)，也每 HEARTBEAT 毫秒强制 flush 一次当前累积，
-// 让 TUI 每 ~2 秒能看到思考在推进（几词一刷）。纯兜底，不影响正常分批逻辑。
-const REASONING_HEARTBEAT_MS = 2000;
+// 构造一个 emergency flush chunk：只带累积的 reasoning_content，content 为空
+// 用于流中断时强制 flush 未发送的 reasoning，避免 reasoning 永远丢失
+function buildFlushChunk(reasoningBuffer: string): Record<string, unknown> {
+  return {
+    id: "codebuddy-fork-flush",
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: "codebuddy-fork-flush",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          reasoning_content: reasoningBuffer,
+          content: "",
+        },
+        finish_reason: null,
+      },
+    ],
+  };
+}
 
-// 对流式响应做 SSE 规范化 + reasoning 分批合并
+// 对流式响应做 SSE 规范化 + reasoning 合并
 type LogFn = (level: "info" | "warn" | "debug", message: string) => void;
 const noopLog: LogFn = () => {};
 
@@ -398,140 +386,69 @@ async function normalizeCodeBuddySSE(
   log: LogFn = noopLog,
 ): Promise<Response> {
   // 非 SSE 响应（如非流式 chat completion）直接透传
-  // NOTE: 保持 info 级别 —— 请求级事件频率低（每请求1条），且是判断
-  // "fork 是否生效 / 响应是否 SSE" 的核心排障信号。debug 在默认运行时
-  // 不可见，降级会导致日常排查丢失此信号。
   const ct = response.headers.get("content-type") || "";
   if (!ct.includes("text/event-stream")) {
-    log("info", `[${VERSION_TAG}] non-SSE response, content-type: ${ct}`);
+    log("info", `[codebuddy-fork] non-SSE response, content-type: ${ct}`);
     return response;
   }
-  log("info", `[${VERSION_TAG}] SSE stream detected, normalizing + batching reasoning`);
+  log("info", "[codebuddy-fork] SSE stream detected, normalizing + merging reasoning");
 
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
-  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
   const state: MergeState = {
     reasoningBuffer: "",
     totalChunksIn: 0,
     totalChunksOut: 0,
     reasoningFlushed: false,
-    totalRawBytes: 0,
-    streamStartMs: Date.now(),
-    heartbeatLogged: false,
   };
-
-  // ==========================================================================
-  // 心跳机制（setTimeout 链式续期，非 setInterval）
-  // 防 setInterval 永不销毁的泄漏：每轮回调先检查 alive 标志，
-  // 只有 stream 仍活跃才续期。即使某个清理路径漏执行，一旦 alive=false
-  // 就不再调度下一轮 —— 结构性杜绝"定时器永活"。
-  // ==========================================================================
-  let heartbeatActive = true;
-  let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const stopHeartbeat = () => {
-    heartbeatActive = false;
-    if (heartbeatTimer !== undefined) {
-      clearTimeout(heartbeatTimer);
-      heartbeatTimer = undefined;
-    }
-  };
-
-  // 每 HEARTBEAT ms 强制 flush 累积的 reasoning（即使 pull 未被调用也能 enqueue）
-  // 这是防"无限卡死"的关键兜底：reasoning-only 期间迟迟不达 400 字符阈值时，
-  // 保证每 ~2s 至少输出一次 thinking，TUI 能看到推进，不会误判死锁。
-  const scheduleHeartbeat = () => {
-    if (!heartbeatActive) return;
-    heartbeatTimer = setTimeout(() => {
-      try {
-        if (streamController && state.reasoningBuffer.length > 0) {
-          const line = buildReasoningChunk(state.reasoningBuffer);
-          streamController.enqueue(encoder.encode(line + "\n\n"));
-          state.totalChunksOut++;
-          state.reasoningFlushed = true;
-          state.reasoningBuffer = "";
-          // 日志收敛：heartbeat flush 每 ~2s 一次，若每次都打 info 会在长对话中刷几十上百条
-          // 干扰其他排查。只在首次 flush 时打一条 info 说明心跳在工作，后续静默。
-          // 若要诊断 heartbeat 是否规律触发，可临时取消注释下一行（逐条日志）。
-          // log("info", `[${VERSION_TAG}] heartbeat flush ${line.length}B reasoning`);
-          if (!state.heartbeatLogged) {
-            state.heartbeatLogged = true;
-            log("info", `[${VERSION_TAG}] heartbeat active (periodic reasoning flush enabled, first flush ${line.length}B)`);
-          }
-        }
-      } catch { /* stream closed — ignore */ }
-      scheduleHeartbeat(); // 续期：仅当 heartbeatActive 仍为 true 才会生效
-    }, REASONING_HEARTBEAT_MS);
-  };
-  scheduleHeartbeat();
 
   const stream = new ReadableStream({
-    start(controller) {
-      streamController = controller;
-    },
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          stopHeartbeat();
-          // 流结束 — flush buffer 尾部 + 残余 reasoning
+          // 流结束 — flush buffer
           if (buffer.length > 0) {
             const out = processSseDataLine(buffer, state);
             for (const o of out) controller.enqueue(encoder.encode(o + "\n\n"));
             buffer = "";
           }
+          // 流中断时强制 flush 残余 reasoning（防止 reasoning 永远不显示）
           if (state.reasoningBuffer.length > 0) {
-            controller.enqueue(encoder.encode(buildReasoningChunk(state.reasoningBuffer) + "\n\n"));
-            state.reasoningFlushed = true;
+            log("warn", `[codebuddy-fork] stream ended with unflushed reasoning, force-flushing ${state.reasoningBuffer.length} chars`);
+            const flush = buildFlushChunk(state.reasoningBuffer);
+            controller.enqueue(encoder.encode("data: " + JSON.stringify(flush) + "\n\n"));
             state.reasoningBuffer = "";
+            state.totalChunksOut++;
           }
-          const dur = Date.now() - state.streamStartMs;
-          const avgMs = state.totalChunksIn > 0 ? (dur / state.totalChunksIn).toFixed(2) : "0";
-          log("info", `[${VERSION_TAG}] stream ended, in=${state.totalChunksIn} out=${state.totalChunksOut} ratio=${state.totalChunksIn > 0 ? (state.totalChunksOut / state.totalChunksIn).toFixed(2) : "0"} bytes=${state.totalRawBytes} dur=${dur}ms avg=${avgMs}ms/chunk`);
+          log("info", `[codebuddy-fork] stream ended, in=${state.totalChunksIn} out=${state.totalChunksOut} flushed=${state.reasoningFlushed}`);
           controller.close();
           return;
         }
-        state.totalRawBytes += value.byteLength;
         buffer += decoder.decode(value, { stream: true });
-        // 处理所有完整行
-        // WARN: 绝对不能跳过空行！空行透传成 "\n\n" enqueue 是 ReadableStream 的"心跳"——
-        // reasoning-only 期间 processSseDataLine 返回空数组（不到阈值不输出），
-        // 若此时也没有空行 enqueue，队列空 → 消费者 read() pending → pull 不再被调用 → 死锁。
-        // 空行让消费者持续收到数据、pull 持续被调用。ratio=2.0 只是计数失真，不影响功能。
+        // 找出所有完整行
         let nl: number;
-        // 防御：单次 pull 最多处理 MAX_LINES_PER_PULL 行，理论上 indexOf 每次 slice
-        // 都会缩短 buffer 必会终止；此上限是极端异常输入下的最后保险，防无限自旋。
-        let linesProcessed = 0;
         while ((nl = buffer.indexOf("\n")) !== -1) {
-          if (++linesProcessed > 100000) {
-            log("warn", `[${VERSION_TAG}] pull line cap hit (${linesProcessed}), dropping tail`);
-            break;
-          }
           const line = buffer.slice(0, nl);
           buffer = buffer.slice(nl + 1);
           const out = processSseDataLine(line, state);
-          for (const o of out) {
-            controller.enqueue(encoder.encode(o + "\n\n"));
-            state.totalChunksOut++;
-          }
+          for (const o of out) controller.enqueue(encoder.encode(o + "\n\n"));
         }
       } catch (err) {
-        stopHeartbeat();
-        log("warn", `[${VERSION_TAG}] stream error: ${String(err)}`);
+        log("warn", `[codebuddy-fork] stream error: ${String(err)}`);
+        // 流异常时也要尝试 flush 残余 reasoning
         try {
           if (state.reasoningBuffer.length > 0) {
-            controller.enqueue(encoder.encode(buildReasoningChunk(state.reasoningBuffer) + "\n\n"));
+            const flush = buildFlushChunk(state.reasoningBuffer);
+            controller.enqueue(encoder.encode("data: " + JSON.stringify(flush) + "\n\n"));
             state.reasoningBuffer = "";
+            state.totalChunksOut++;
           }
         } catch { /* swallow */ }
         controller.error(err);
       }
-    },
-    cancel() {
-      stopHeartbeat();
     },
   });
 
@@ -633,16 +550,6 @@ async function refreshAccessToken(
 export const CodeBuddyAuthPlugin: Plugin = async (input) => {
   return {
     async config(config) {
-      // 版本标识：每次启动打印一次，后续 stream ended 日志也带这个 tag
-      try {
-        input.client.app.log({
-          body: {
-            service: "codebuddy-fork",
-            level: "info",
-            message: `${VERSION_TAG} starting (schema=opencode-codebuddy-auth, build=${FORK_VERSION})`,
-          },
-        });
-      } catch { /* ignore */ }
       if (!config.provider) config.provider = {};
       if (!config.provider[PROVIDER_ID]) {
         config.provider[PROVIDER_ID] = {
@@ -725,9 +632,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
                 });
               } catch { /* ignore log failure */ }
             };
-            // NOTE: 保持 info —— 请求级事件频率低，且是确认请求确实到达 fork、
-            // 版本加载是否正确的最直接证据（本轮多次调试靠它定位版本问题）。
-            log("info", `[${VERSION_TAG}] fetch intercepted: ${urlStr.substring(0, 120)}`);
+            log("info", `[codebuddy-fork] fetch intercepted: ${urlStr.substring(0, 120)}`);
 
             const currentAuth = await getAuth();
             if (currentAuth.type !== "oauth" || !currentAuth.access) {
@@ -785,7 +690,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
               (response.status === 401 || response.status === 403) &&
               currentAuth.refresh
             ) {
-              log("info", "[codebuddy] Token expired, attempting refresh...");
+              console.log("[codebuddy] Token expired, attempting refresh...");
               const refreshed = await refreshAccessToken(currentAuth.refresh);
               if (refreshed?.accessToken) {
                 accessToken = refreshed.accessToken;
@@ -807,7 +712,9 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
 
             if (!response.ok) {
               const errorText = await response.text();
-              log("warn", `[codebuddy] API error: ${response.status} - ${errorText.substring(0, 200)}`);
+              console.error(
+                `[codebuddy] API error: ${response.status} - ${errorText}`,
+              );
               return new Response(errorText, {
                 status: response.status,
                 headers: { "Content-Type": "application/json" },
