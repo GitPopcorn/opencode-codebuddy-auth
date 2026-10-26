@@ -1,0 +1,53 @@
+#!/bin/sh
+# 提交信息规范门禁（commit-msg 钩子）
+#
+# 规则来源: docs/specs/2026-10-26-提交信息规范.md
+# 行为: 就地修复提交信息并打印逐处改动; 修复失败时以非零码阻断提交。
+#
+# 安装: git config core.hooksPath .githooks
+#
+# NOTE 本文件必须是 LF 换行, CRLF 会让 sh 无法执行。
+
+root=$(git rev-parse --show-toplevel) || exit 1
+
+if [ -z "$1" ]; then
+    echo "提交信息门禁: 没有拿到提交信息文件路径, 阻断提交。" >&2
+    exit 1
+fi
+
+# NOTE 门禁脚本定位顺序: 环境变量 -> 仓内 tools/ -> 单点共享默认路径
+checker=""
+if [ -n "$COMMIT_MSG_GATE_TOOL" ] && [ -f "$COMMIT_MSG_GATE_TOOL" ]; then
+    checker="$COMMIT_MSG_GATE_TOOL"
+elif [ -f "$root/tools/check_commit_msg.py" ]; then
+    checker="$root/tools/check_commit_msg.py"
+elif [ -f "E:/vscode-workspace-temp/tools/check_commit_msg.py" ]; then
+    checker="E:/vscode-workspace-temp/tools/check_commit_msg.py"
+else
+    echo "提交信息门禁: 找不到门禁脚本, 已查找:" >&2
+    echo "  1) 环境变量 COMMIT_MSG_GATE_TOOL: ${COMMIT_MSG_GATE_TOOL:-<未设置>}" >&2
+    echo "  2) 仓内路径: $root/tools/check_commit_msg.py" >&2
+    echo "  3) 共享默认路径: E:/vscode-workspace-temp/tools/check_commit_msg.py" >&2
+    echo "提交信息门禁: 阻断提交。" >&2
+    exit 1
+fi
+
+# NOTE Windows 上优先用 python, 回落到 python3
+if command -v python >/dev/null 2>&1; then
+    py=python
+elif command -v python3 >/dev/null 2>&1; then
+    py=python3
+else
+    echo "提交信息门禁: 找不到 python 解释器, 阻断提交。" >&2
+    exit 1
+fi
+
+"$py" "$checker" --apply --file "$1"
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo "提交信息门禁: 修复失败 (退出码 $status), 阻断提交。" >&2
+    exit $status
+fi
+
+exit 0
