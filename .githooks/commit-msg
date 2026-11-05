@@ -1,5 +1,5 @@
 #!/bin/sh
-# 提交信息规范门禁（commit-msg 钩子）
+# 提交信息规范门禁 (commit-msg 钩子)
 #
 # 规则来源: docs/specs/2026-10-26-提交信息规范.md
 # 钩子契约: docs/specs/2026-10-27-提交信息门禁修复方案.md §四
@@ -10,7 +10,7 @@
 #
 # NOTE 本文件必须是 LF 换行, CRLF 会让 sh 无法执行。
 
-# NOTE 单点共享的门禁脚本默认路径（第三级回退）
+# NOTE 单点共享的门禁脚本默认路径 (第三级回退)
 SHARED_CHECKER="E:/vscode-workspace-temp/tools/check_commit_msg.py"
 
 # NOTE 判断一个取值是否视为真: 1 / true / yes / on (大小写不敏感) 为真; false / 0 / no / off / 空 为假。
@@ -33,7 +33,7 @@ msg_file="$1"
 # STEP 定位仓库根目录
 root=$(git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$root" ]; then
-    echo "提交信息门禁：无法定位仓库根目录（git rev-parse --show-toplevel 失败），阻断提交。" >&2
+    echo "提交信息门禁：无法定位仓库根目录 (git rev-parse --show-toplevel 失败) ，阻断提交。" >&2
     exit 1
 fi
 
@@ -107,7 +107,7 @@ fi
 status=$?
 
 if [ "$status" -ne 0 ]; then
-    echo "提交信息门禁：门禁未通过（退出码 $status），阻断提交。" >&2
+    echo "提交信息门禁：门禁未通过 (退出码 $status) ，阻断提交。" >&2
     exit "$status"
 fi
 
