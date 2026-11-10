@@ -53,6 +53,11 @@
 		"`type` 用小写英文，可带数字和下划线，长度小于等于 [10]，例如 `chore`、`feat`、`docs`。",
 		// "`type` 应尽量符合 `Conventional Commits` 标准。",
 		"分隔符为半角冒号后跟一个空格，正文用中文，单行。",
-		"无日期前缀、无设备码、无 AI 标识。"
+		"无日期前缀、无设备码、无 AI 标识。",
+		"下列命令用于复检中西文直接相接处，命中就给该西文字符组补半角方括号，任选一条执行，参数都是待检文件的路径。配置是 JSONC，命令里的反斜杠在文件中双写，实际执行时按单个反斜杠。",
+		"- 命令-01-PowerShell：`$t = Get-Content -LiteralPath '<文件>' -Raw; [regex]::Matches($t, '[^\\u0001-\\u0127]([A-Za-z0-9_]| )|([A-Za-z0-9_]| )[^\\u0001-\\u0127]') | ForEach-Object { $_.Value }`",
+		"- 命令-02-Bash：`grep -Po '(*UTF)[^\\x{0001}-\\x{0127}]([A-Za-z0-9_]| )|([A-Za-z0-9_]| )[^\\x{0001}-\\x{0127}]' '<文件>'`",
+		"- 命令-03-Python：`python -c \"import re,sys;t=open(sys.argv[1],encoding='utf-8').read();[print(m.group(0)) for m in re.finditer(r'[^\\u0001-\\u0127]([A-Za-z0-9_]| )|([A-Za-z0-9_]| )[^\\u0001-\\u0127]',t)]\" '<文件>'`",
+		"- 命令-04-Node.js：`node -e \"const fs=require('fs');const t=fs.readFileSync(process.argv[1],'utf8');for(const m of t.matchAll(/[^\\u0001-\\u0127]([A-Za-z0-9_]| )|([A-Za-z0-9_]| )[^\\u0001-\\u0127]/gu))console.log(m[0])\" '<文件>'`"
 	]
 }
