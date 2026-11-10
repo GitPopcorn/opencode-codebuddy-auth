@@ -2,7 +2,7 @@
 # 提交信息规范门禁 (commit-msg 钩子)
 #
 # 规则来源: docs/specs/2026-10-26-提交信息规范.md
-# 钩子契约: docs/specs/2026-10-27-提交信息门禁修复方案.md §四
+# 钩子契约: docs/bug/2026-10-27-提交信息门禁修复方案.md §四
 # 行为: 就地修复提交信息并打印逐处改动; 门禁失败时以非零码阻断提交。
 # 职责边界: 本钩子只负责定位门禁脚本、判断上下文、拼接参数、透传退出码, 不实现任何规则。
 #
@@ -29,6 +29,12 @@ if [ $# -lt 1 ] || [ -z "$1" ]; then
     exit 1
 fi
 msg_file="$1"
+
+# STEP 显式豁免: 临时改历史或抢救场景可用环境变量整体跳过校验
+if [ "${COMMIT_MSG_GATE_SKIP:-}" = "1" ]; then
+    echo "提交信息门禁：已按 COMMIT_MSG_GATE_SKIP=1 跳过校验。" >&2
+    exit 0
+fi
 
 # STEP 定位仓库根目录
 root=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -66,10 +72,15 @@ if [ "$shared_used" -eq 1 ]; then
     echo "提交信息门禁：使用共享门禁脚本：$checker"
 fi
 
-# STEP 上下文判定: GIT_REFLOG_ACTION 以 rebase 开头 => reword 场景, 降级为只提示不阻断
+# STEP 场景判定: 按 GIT_REFLOG_ACTION 识别当前操作
+# rebase / cherry-pick / revert / am 搬运的都是既有提交信息, 降级为只提示不阻断
+# merge 提交由脚本按 `Merge ` 前缀自动识别, 这里显式传 context 以保持只读语义
 advisory=0
+context="commit"
 case "${GIT_REFLOG_ACTION:-}" in
     rebase*) advisory=1 ;;
+    cherry-pick*|revert*|am*) advisory=1 ;;
+    merge*) context="merge" ;;
 esac
 
 # STEP 多行开关: 环境变量 或 git 配置键, 任一为真即放行多行提交信息
@@ -100,6 +111,9 @@ if [ "$advisory" -eq 1 ]; then
 fi
 if [ "$allow_multiline" -eq 1 ]; then
     set -- "$@" --allow-multiline
+fi
+if [ "$context" != "commit" ]; then
+    set -- "$@" --context "$context"
 fi
 
 # STEP 调用门禁脚本并原样透传退出码
