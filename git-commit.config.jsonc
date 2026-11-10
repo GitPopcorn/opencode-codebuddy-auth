@@ -1,0 +1,57 @@
+{
+	"schemaVersion": 1,
+	"meta": {
+		"id": "opencode-codebuddy-auth",
+		"description": "规则组合 [G3C] 的提交信息配置"
+	},
+	"commitMessage": {
+		"line": {
+			"mode": "single",
+			"maxLength": 200
+		},
+		"standardPrefix": {
+			"mode": "auto",
+			"patterns": []
+		},
+		"device": {
+			"required": false,
+			"whitelist": [],
+			"sources": [
+				".git/info/device-name.txt",
+				"hostname"
+			]
+		},
+		"examples": [
+			"chore: 把[.githooks/commit-msg]钩子注释与[echo]字符串里的全角圆括号改为半角，按[A0907]口径清理[4]处残留并删去随之产生的行尾空白，改动只涉及注释与提示文案的文本形态，参数拼接与退出码透传逻辑一字未动"
+		],
+		"instructions": {
+			"punctuation": [
+				"中文语句用全角标点，西文语句用半角标点，同一语句内不混用。",
+				"非引用部分把 `【】 〖〗 『』 「」` 替换为半角方括号 `[]`。",
+				"中文与西文的相邻边界用半角方括号 `[]` 括含。"
+			],
+			"purpose": [
+				"前两句简明扼要、精准概括地说清本次提交要达成的目的，不要罗列细节，概括部分是必需的，至少要有一句话。",
+				"后续内容为细节描述部分，在其中再说清大致改了哪些内容，细节描述部分非必需。"
+			],
+			"structure": [
+				"概括部分与细节描述部分之间的间隔要清晰。",
+				"不得出现用于分层的句号 `。` 与分号 `；`，需要分层时用半角圆括号 `()` 括含或改用列表前缀。"
+			]
+		}
+	},
+	"gate": {
+		"command": "python E:/vscode-workspace-temp/tools/check_commit_msg.py --check --file {file} --repo {repo}",
+		"passCodes": [
+			0
+		],
+		"passPattern": ""
+	},
+	"notes": [
+		"本仓属于规则组合 [G3C]，典型提交格式：`type: 正文`。",
+		"`type` 用小写英文，可带数字和下划线，长度小于等于 [10]，例如 `chore`、`feat`、`docs`。",
+		// "`type` 应尽量符合 `Conventional Commits` 标准。",
+		"分隔符为半角冒号后跟一个空格，正文用中文，单行。",
+		"无日期前缀、无设备码、无 AI 标识。"
+	]
+}
