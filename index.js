@@ -1,3 +1,9 @@
+/**
+ * [CodeBuddy] 认证插件: 用设备码式授权换取访问令牌, 并把上游 [SSE] 流归一化为统一的增量分块
+ * 对外导出 [CodeBuddyAuthPlugin], 内部负责取远端模型列表, 解析 [JWT] 载荷补齐租户与用户标识, 以及到期刷新
+ * @author DeepSeek-V4.1-Flash
+ * @date 2026-11-11
+ */
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
