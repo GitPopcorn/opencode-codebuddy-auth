@@ -118,6 +118,18 @@ body: "{}",
 - 首条消息角色保障：`developer` 就地改 `system`，否则前置一条中性 system
 - 幂等：净化两次与净化一次结果一致，周边文本逐字节保留
 
+### 11b. 指纹净化九项正确性修复（v4.0.1 —— 行为修复，非新功能）
+
+1. **A1 与净化开关解耦**：`CODEBUDDY_FINGERPRINT_SANITIZE=off` 只停用**文本改写**；首条 `role:system` 由独立开关 `CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off` 控制
+2. **深拷贝**：净化在副本上进行 —— 宿主传入的 `messages` 数组与消息对象绝不被就地改写（此前浅拷贝共享同一数组引用）
+3. **作用范围可配**：`CODEBUDDY_FINGERPRINT_SCOPE=all|system-assistant`，默认 `system-assistant` —— 线上实测（2026-11-18）：上游**不**扫描 `user` / `tool` 角色（P1/P2 均 200，P3 assistant 为 400/11128），改写 tool 结果会与磁盘内容不符
+4. **工具入参保持合法 JSON**：改写后 `JSON.parse` 校验，非法（含被删除型规则清空）则回滚该字段，只记一条计数 warn
+5. **空内容处理**：`system` 内容被清空 -> 换中性默认提示词；`assistant` 内容被清空且无 `tool_calls` -> 整条丢弃
+6. **日志防自污染**：上游错误体（`11128` 与 `Illegal API invocation from an unapproved channel`）绝不原样进日志 —— 宿主日志会被 agent 读回并重新触发同一错误；只记 HTTP 状态 + 固定分类标签（`channel-reject` / `auth` / `rate-limit` / `other`）+ 脱敏码（`11128` -> `CHANNEL_REJECT`）
+7. **规则表合并**：原先分散的两张表（prompt 6 条 + body 29 条）合并为一张 `FINGERPRINT_RULES`，两个调用点各取子集；开关收敛为 `CODEBUDDY_FINGERPRINT_SANITIZE`，`CODEBUDDY_PROMPT_SANITIZE` 保留为**废弃别名**（首次见到打一条 info）
+8. **识别 2xx + JSON 错误体**：上游偶尔用 HTTP 200 返回 JSON 错误 —— 此前逃过 `!response.ok` 分支从未被分类；现在按同一套分类记日志（body 仍原样转发）
+9. **黄金回归测试**：新增 `scripts/verify-fingerprint.mjs`（零依赖，纯 node）—— 每条内置规则一条精确输出用例 + 幂等 + 空内容 + 工具入参 JSON + 作用域 + 开关 + 日志防自污染
+
 ### 12. 凭据自愈层
 
 - `event` 钩子监听 `session.error`，命中 `ProviderAuthError` 或 401 与 403 → 自动刷新 → 提示重试（不自动重放用户消息）

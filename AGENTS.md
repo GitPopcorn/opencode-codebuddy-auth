@@ -12,9 +12,11 @@ OpenCode 插件，为 CodeBuddy 提供 IOA OAuth 认证和请求拦截。单文�
 
 ```bash
 npm install && npm run build   # tsc 编译到仓库根目录（index.js + index.d.ts，非 dist/）
+node scripts/verify-fingerprint.mjs   # 指纹净化黄金回归测试（零依赖，纯 node）
 ```
 
-无测试、无 lint、无 CI。只有 `npm run build`。
+无 lint、无 CI。只有 `npm run build`；`scripts/verify-fingerprint.mjs` 是独立的
+黄金回归脚本（每条内置规则一条用例 + 幂等 + 空内容 + 工具入参 JSON + 日志防自污染）。
 
 **构建输出位置注意**：`tsconfig.json` 的 `outDir: "."`，`rootDir: "src"`，
 编译产物直接落在仓库根目录（`index.js`），OpenCode 通过 `opencode.jsonc` 的
@@ -49,17 +51,24 @@ npm install && npm run build   # tsc 编译到仓库根目录（index.js + index
 - 会话内自愈：`event` 钩子捕获 401 与 403 → 自动刷新 → toast 提示重试（不自动重放用户消息，避免副作用重复）
 - 账号切换检测：sidecar `~/.local/share/opencode/codebuddy-account.json` 记录 `uid` 与 `nickname`，与当前令牌绑定账号不一致即提示
 - 渠道指纹净化：出站 body 按**跨度改写**（不是整条替换 system，用户 AGENTS.md 指令完整保留），覆盖 `content`、`reasoning_content`、`reasoning` 与工具参数
+  - v4.0.1 起：规则表**合并为一张**（prompt 6 条 + body 29 条共用一个引擎），开关收敛为 `CODEBUDDY_FINGERPRINT_SANITIZE`
+  - 作用范围由 `CODEBUDDY_FINGERPRINT_SCOPE` 控制，默认 `system-assistant`（线上实测上游不扫描 user / tool 角色）
+  - 净化在**深拷贝**上进行 —— 宿主传入的请求对象绝不被就地修改
+  - 上游错误体**绝不原样进日志**：只记 HTTP 状态 + 固定分类标签 + 脱敏码（`11128` -> `CHANNEL_REJECT`），
+    防止宿主日志被 agent 读回后重新触发同一个错误（自污染回路）
 - 用户命令：`/codebuddy-login` 主动重登，`/codebuddy-doctor` 输出体检结论
 
 ### 环境变量开关
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `CODEBUDDY_FINGERPRINT_SANITIZE` | 开启 | 置 `off` 关闭出站 body 的指纹净化 |
+| `CODEBUDDY_FINGERPRINT_SANITIZE` | 开启 | 置 `off` 关闭**全部**指纹文本改写（body + system prompt） |
+| `CODEBUDDY_FINGERPRINT_SYSTEM_FIRST` | 开启 | 置 `off` 关闭 A1（保证首条消息是 `role:system`）—— 与净化开关相互独立 |
+| `CODEBUDDY_FINGERPRINT_SCOPE` | `system-assistant` | `all` 改写全部 role；`system-assistant` 只改 system + assistant（工具入参始终改写） |
 | `CODEBUDDY_DEVICE_TOKEN` | 关闭 | 置 `on` 才附带自签的 `X-Device-Token` |
 | `CODEBUDDY_TURING_NATIVE` | 自动发现 | 指定 TuringShield 原生插件路径（文件或目录均可） |
 | `CODEBUDDY_TURING_NATIVE_DISABLED` | 未设置 | 置 `1` 完全关闭设备令牌能力 |
-| `CODEBUDDY_PROMPT_SANITIZE` | 开启 | 置 `off` 关闭 system prompt 净化钩子 |
+| `CODEBUDDY_PROMPT_SANITIZE` | 未设置 | **废弃别名** —— 置 `off` 等同于关闭 `CODEBUDDY_FINGERPRINT_SANITIZE`（首次见到会打一条 info 提示迁移） |
 | `CODEBUDDY_DEFAULT_MODEL` | 空 | 强制覆盖用户所选模型 |
 
 ### SSE 处理（本地补丁核心，`normalizeCodeBuddySSE`）

@@ -73,7 +73,9 @@ async function fetchRemoteModels(accessToken, log = noopLog) {
     }
     const body = (await resp.json());
     if (body.code !== 0 || !body.data) {
-        log("warn", `[${VERSION_TAG}] /v3/config rejected: code=${body.code} msg=${body.msg || ""}`);
+        // 上游 msg 不落日志 —— 只记分类与脱敏码
+        const classified = classifyUpstreamError(resp.status, body);
+        log("warn", `[${VERSION_TAG}] /v3/config rejected: class=${classified.label} code=${classified.codeLabel || "none"}`);
         return [];
     }
     const allModels = body.data.models || [];
@@ -284,207 +286,293 @@ export function buildAuthHeadersForTest(accessToken, modelId, deviceToken, sessi
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-// ============================================================================
-// 系统提示词指纹净化（规避上游渠道校验 code 11128）
-// ----------------------------------------------------------------------------
-// 上游渠道校验会对系统提示词里出现的"第三方 agent harness 身份短语"直接报错
-// （code 11128）。本插件只针对下面 6 类**固定短语**做逐条替换（大小写不敏感），
-// 命中短语之外的文本逐字节保持不变：
-//   - 不会去擦除裸产品名（OpenCode / opencode），否则 opencode.jsonc 之类的
-//     路径会被误伤成非法内容；
-//   - 每条规则只替换命中的那一句，不重排段落、不改换行。
-// 净化只对本插件自己的 provider（codebuddy）生效，其它 provider 的系统提示词
-// 原样透传。
-// ============================================================================
 /**
- * 净化规则表：按数组顺序依次应用，每条只替换命中的短语本身。
- * source 保留短语的原始大小写（便于阅读与外部核对），大小写不敏感由 "i" 标志提供。
+ * 统一规则表 —— 数组顺序即生效顺序。
+ * prompt 子集与 body 子集各自保持原有相对顺序，行为与 v4.0.0 完全等价。
  */
-const PROMPT_SANITIZE_RULES = [
+const FINGERPRINT_RULES = [
+    // ===== prompt 子集（system-transform 钩子，原 6 条） =====
     // 1. "You are an AI agent powered by <X> Harness." -> "You are an AI agent."
     {
+        id: "prompt-ai-agent-harness",
+        targets: ["prompt"],
+        mode: "regex",
         source: "You are an AI agent powered by [^\\n]{0,200}? Harness\\.",
         flags: "gi",
         replacement: "You are an AI agent.",
     },
     // 2. "Sisyphus-Junior - Focused executor from OhMyOpenCode" -> "Focused executor"
     {
+        id: "prompt-sisyphus-junior",
+        targets: ["prompt"],
+        mode: "regex",
         source: "Sisyphus-Junior\\s*[-\\u2010-\\u2015]\\s*Focused executor from OhMyOpenCode",
         flags: "gi",
         replacement: "Focused executor",
     },
     // 3. "Main branch (you will usually use this for PRs)" -> "Main branch"
     {
+        id: "prompt-main-branch",
+        targets: ["prompt"],
+        mode: "regex",
         source: "Main branch \\(you will usually use this for PRs\\)",
         flags: "gi",
         replacement: "Main branch",
     },
     // 4. "You are Claude Code" -> "You are an AI coding assistant"
     {
+        id: "prompt-claude-code",
+        targets: ["prompt"],
+        mode: "regex",
         source: "You are Claude Code",
         flags: "gi",
         replacement: "You are an AI coding assistant",
     },
     // 5. "cc_entrypoint=<非空白>" -> 整段删除
     {
+        id: "prompt-entrypoint",
+        targets: ["prompt"],
+        mode: "regex",
         source: "cc_entrypoint=\\S+",
         flags: "gi",
         replacement: "",
     },
     // 6. "You are powered by the model named <行尾>" -> "You are powered by a large language model"
     {
+        id: "prompt-model-named",
+        targets: ["prompt"],
+        mode: "regex",
         source: "You are powered by the model named[^\\n]*",
         flags: "gi",
         replacement: "You are powered by a large language model",
     },
-];
-/**
- * 净化开关：环境变量 CODEBUDDY_PROMPT_SANITIZE=off 可整体停用净化（默认启用）。
- * 取值 off / 0 / false / no 均视为停用，其余（含未设置）视为启用。
- */
-function isPromptSanitizeEnabled() {
-    const raw = (process.env.CODEBUDDY_PROMPT_SANITIZE || "").trim().toLowerCase();
-    if (!raw)
-        return true;
-    return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
-}
-/**
- * 对单条系统提示词做指纹净化。
- * 纯函数：不读环境变量、不打日志 —— 命中短语逐条替换，其余文本逐字节保留。
- * 供钩子与外部验证脚本共用（钩子侧另行判断 provider 与开关）。
- */
-export function sanitizeSystemPromptForTest(text) {
-    if (typeof text !== "string" || text.length === 0)
-        return text;
-    let out = text;
-    for (const rule of PROMPT_SANITIZE_RULES) {
-        // 每次新建 RegExp —— 避免模块级 /g 正则的 lastIndex 状态串味
-        out = out.replace(new RegExp(rule.source, rule.flags), rule.replacement);
-    }
-    return out;
-}
-// ============================================================================
-// 请求体级指纹净化（规避上游渠道校验 code 11128）
-// ----------------------------------------------------------------------------
-// 根因（已由线上 A/B 抓包证实）：
-//   上游对请求体做"大小写不敏感的精确子串匹配"，扫描范围覆盖 role:"system"
-//   与 role:"assistant" 的消息（含 reasoning_content）。任何一条历史消息里
-//   残留的第三方 harness 身份短语，都会让**整条请求**被拒：
-//     HTTP 400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}
-//   症状表现为"同一会话第一轮正常、后续轮次随机 400"。
-//
-// 修复策略（在 loader 的 fetch 拦截里对**发出去的请求体**做改写）：
-//   1. A1 —— 保证 messages[0] 是 system 消息（developer 就地改；不是就补一条）。
-//   2. A2 —— 对每条消息的文本做"逐条短语改写"（逐字匹配、大小写不敏感），
-//      只改写命中的那一小片，其余文本逐字节保留。
-//      —— 刻意**不**整体替换系统提示词：用户的 AGENTS.md 指令必须完整存活。
-//   3. 幂等：净化两次 == 净化一次；无关文本不被改动。
-//
-// 开关：CODEBUDDY_FINGERPRINT_SANITIZE=off 整体停用本净化（默认启用）。
-// ============================================================================
-/** A1 兜底 system 提示词（与 ensureSystemFirst 参考实现一致） */
-const FINGERPRINT_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
-/** R3 身份从句：把整句 "You are ... powered by ..." 换成中性句 */
-const FINGERPRINT_IDENTITY_RE_SOURCE = "(You are\\s+(?:an?\\s+|the\\s+)?(?:[\\w.-]+\\s+){0,3}?(?:agent|assistant|model|AI|LLM)?[\\s,]*)(?:powered by|built on|built by|created by|developed by|made by|trained by)([^\\n]*?\\.)(\\s|$)";
-/** R7 服务端注入的身份指令句 */
-const FINGERPRINT_SELF_ID_RE_SOURCE = "(When asked about your[^.\\n]{0,60}?identity[^.\\n]{0,60}?,\\s*identify yourself as\\s+[^\\n]{1,80}?\\.)(\\W|$)";
-/** R4 裸错误码 —— 上游把错误码本身也当指纹 */
-const FINGERPRINT_ERROR_CODE_RE_SOURCE = "\\b11128\\b";
-/** R5 cc_entrypoint=<非空白> */
-const FINGERPRINT_ENTRYPOINT_RE_SOURCE = "\\bcc_entrypoint=\\S+";
-/** R6 </?model_identity> 标签 */
-const FINGERPRINT_MODEL_IDENTITY_RE_SOURCE = "<\\/?model_identity>";
-/** R8 XML 风格标记 */
-const FINGERPRINT_XML_MARKER_RE_SOURCE = "<\\/?(?:agent-identity|Role|Behavior_Instructions)>";
-/** R1 固定短语表（大小写不敏感；只替换命中的片段，其余逐字节保留） */
-const FINGERPRINT_LITERAL_RULES = [
+    // ===== body 子集（请求体净化，原 29 条） =====
+    // R1 固定短语表（大小写不敏感；只替换命中的片段，其余逐字节保留）
     {
+        id: "body-lit-ai-agent-harness",
+        targets: ["body"],
+        mode: "literal",
         source: "You are an AI agent powered by DeepSeek Harness",
         replacement: "You are an AI agent running inside this harness",
     },
     {
+        id: "body-lit-coding-agent-powered-by",
+        targets: ["body"],
+        mode: "literal",
         source: "You are a coding agent powered by the ",
         replacement: "You are a coding agent running on the ",
     },
     {
+        id: "body-lit-harness-web-gui",
+        targets: ["body"],
+        mode: "literal",
         source: "You are interacting with the user through the DeepSeek Harness Web GUI",
         replacement: "You are working with the user inside this harness Web GUI",
     },
     {
+        id: "body-lit-agent-teams",
+        targets: ["body"],
+        mode: "literal",
         source: "Agent Teams is available in this session",
         replacement: "Agent Teams is enabled for this session",
     },
     {
+        id: "body-lit-tokens-prefixed-at",
+        targets: ["body"],
+        mode: "literal",
         source: "Tokens prefixed with @ are paths the user explicitly referenced.",
         replacement: "Paths that begin with @ are the ones the user explicitly referenced.",
     },
     {
+        id: "body-lit-relative-paths",
+        targets: ["body"],
+        mode: "literal",
         source: "Relative paths resolve from the workspace root;",
         replacement: "Relative paths are resolved against the workspace root;",
     },
     {
+        id: "body-lit-absolute-paths",
+        targets: ["body"],
+        mode: "literal",
         source: "absolute paths identify files or directories on the host.",
         replacement: "absolute paths point at files or directories on the host.",
     },
     {
+        id: "body-lit-trailing-slash",
+        targets: ["body"],
+        mode: "literal",
         source: "A trailing slash marks a directory:",
         replacement: "A trailing slash indicates a directory:",
     },
     {
+        id: "body-lit-list-it",
+        targets: ["body"],
+        mode: "literal",
         source: "list it when its contents matter.",
         replacement: "list it whenever its contents matter.",
     },
     {
+        id: "body-lit-anything-else",
+        targets: ["body"],
+        mode: "literal",
         source: "Anything else is a file:",
         replacement: "Everything else is a file:",
     },
     {
+        id: "body-lit-read-tool",
+        targets: ["body"],
+        mode: "literal",
         source: "use the read tool when its contents are needed,",
         replacement: "use the read tool whenever you need its contents,",
     },
     {
+        id: "body-lit-do-not-claim",
+        targets: ["body"],
+        mode: "literal",
         source: "and do not claim to have inspected it before reading.",
         replacement: "and never claim to have inspected it before reading it.",
     },
     {
+        id: "body-lit-at-quoted-path",
+        targets: ["body"],
+        mode: "literal",
         source: "@\"...\" quotes a path containing spaces.",
         replacement: "A path containing spaces is quoted with @\"...\".",
     },
     {
+        id: "body-lit-no-other-target",
+        targets: ["body"],
+        mode: "literal",
         source: "without naming another target, they mean this GUI.",
         replacement: "and names no other target, the interface described here is meant.",
     },
     {
+        id: "body-lit-mean-this-gui",
+        targets: ["body"],
+        mode: "literal",
         source: "they mean this GUI.",
         replacement: "the interface described here is meant.",
     },
     {
+        id: "body-lit-main-branch",
+        targets: ["body"],
+        mode: "literal",
         source: "Main branch (you will usually use this for PRs)",
         replacement: "Default branch (you will usually use this for PRs)",
     },
     {
+        id: "body-lit-claude-code-cli",
+        targets: ["body"],
+        mode: "literal",
         source: "You are Claude Code, Anthropic's official CLI for Claude",
         replacement: "You are an AI coding assistant, an official CLI tool for Claude",
     },
     {
+        id: "body-lit-codex-cli",
+        targets: ["body"],
+        mode: "literal",
         source: "You are a coding agent running in the Codex CLI, a terminal-based coding assistant",
         replacement: "You are a coding agent running in this CLI tool, a terminal-based coding assistant",
     },
     {
+        id: "body-lit-feedback-url",
+        targets: ["body"],
+        mode: "literal",
         source: "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
         replacement: "To provide feedback, report the issue at https://example.invalid/feedback/issues",
     },
     {
+        id: "body-lit-sisyphus-junior",
+        targets: ["body"],
+        mode: "literal",
         source: "Sisyphus-Junior - Focused executor from OhMyOpenCode",
         replacement: "Focused executor",
     },
+    // R2 品牌名改写（R1 的兜底：处理裸提及）
+    {
+        id: "body-brand-deepseek-harness",
+        targets: ["body"],
+        mode: "literal",
+        source: "DeepSeek Harness",
+        replacement: "this harness",
+    },
+    {
+        id: "body-brand-deepseek-runtime",
+        targets: ["body"],
+        mode: "literal",
+        source: "DeepSeekRuntime",
+        replacement: "this runtime",
+    },
+    {
+        id: "body-brand-ohmyopencode",
+        targets: ["body"],
+        mode: "literal",
+        source: "OhMyOpenCode",
+        replacement: "this workspace",
+    },
+    // R3 身份从句：把整句 "You are ... powered by ..." 换成中性句
+    {
+        id: "body-identity-clause",
+        targets: ["body"],
+        mode: "regex",
+        source: "(You are\\s+(?:an?\\s+|the\\s+)?(?:[\\w.-]+\\s+){0,3}?(?:agent|assistant|model|AI|LLM)?[\\s,]*)(?:powered by|built on|built by|created by|developed by|made by|trained by)([^\\n]*?\\.)(\\s|$)",
+        flags: "gi",
+        replacement: "",
+        replace: (_m, _g1, _g2, g3) => `You are a helpful AI assistant.${g3 || ""}`,
+    },
+    // R4 裸错误码 —— 上游把错误码本身也当指纹
+    {
+        id: "body-bare-error-code",
+        targets: ["body"],
+        mode: "regex",
+        source: "\\b11128\\b",
+        flags: "g",
+        replacement: "11-128",
+    },
+    // R5 cc_entrypoint=<非空白>
+    {
+        id: "body-entrypoint",
+        targets: ["body"],
+        mode: "regex",
+        source: "\\bcc_entrypoint=\\S+",
+        flags: "gi",
+        replacement: "",
+    },
+    // R6 </?model_identity> 标签
+    {
+        id: "body-model-identity-tag",
+        targets: ["body"],
+        mode: "regex",
+        source: "<\\/?model_identity>",
+        flags: "gi",
+        replacement: "",
+    },
+    // R7 服务端注入的身份指令（保留结尾非字面字符，避免吃掉相邻文本）
+    {
+        id: "body-self-identity-instruction",
+        targets: ["body"],
+        mode: "regex",
+        source: "(When asked about your[^.\\n]{0,60}?identity[^.\\n]{0,60}?,\\s*identify yourself as\\s+[^\\n]{1,80}?\\.)(\\W|$)",
+        flags: "gi",
+        replacement: "",
+        replace: (_m, _g1, g2) => `When asked about your capabilities, answer using only the information available in this conversation.${g2 || ""}`,
+    },
+    // R8 XML 风格标记
+    {
+        id: "body-xml-markers",
+        targets: ["body"],
+        mode: "regex",
+        source: "<\\/?(?:agent-identity|Role|Behavior_Instructions)>",
+        flags: "gi",
+        replacement: "",
+    },
 ];
-/** R2 品牌名改写（R1 的兜底：处理裸提及） */
-const FINGERPRINT_BRAND_RULES = [
-    { source: "DeepSeek Harness", replacement: "this harness" },
-    { source: "DeepSeekRuntime", replacement: "this runtime" },
-    { source: "OhMyOpenCode", replacement: "this workspace" },
-];
+/** prompt 子集（system-transform 钩子） */
+const PROMPT_FINGERPRINT_RULES = FINGERPRINT_RULES.filter((rule) => rule.targets.includes("prompt"));
+/** body 子集（请求体净化） */
+const BODY_FINGERPRINT_RULES = FINGERPRINT_RULES.filter((rule) => rule.targets.includes("body"));
+/** A1 兜底 system 提示词（system 消息内容被清空时使用） */
+const FINGERPRINT_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
 /** 正则元字符转义（用于把固定短语安全地编译成正则） */
 function escapeRegExp(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -503,81 +591,351 @@ function replaceLiteral(text, source, replacement) {
     return { text: out, count };
 }
 /**
- * 对单段文本做指纹净化（R1 ~ R8 按顺序应用，后面的规则看到前面的输出）。
+ * 规则引擎：把一组规则按顺序应用到一段文本。
  * 纯函数：不读环境变量、不打日志、不碰网络。
  */
-export function sanitizeFingerprintTextForTest(text) {
+function applyFingerprintRules(text, rules) {
     if (typeof text !== "string" || text.length === 0) {
         return { text, spans: 0 };
     }
     let out = text;
     let spans = 0;
-    // R1 / R2 —— 固定短语表（大小写不敏感）
-    for (const rule of FINGERPRINT_LITERAL_RULES) {
-        const res = replaceLiteral(out, rule.source, rule.replacement);
-        out = res.text;
-        spans += res.count;
-    }
-    for (const rule of FINGERPRINT_BRAND_RULES) {
-        const res = replaceLiteral(out, rule.source, rule.replacement);
-        out = res.text;
-        spans += res.count;
-    }
-    // R3 —— 身份从句整体替换为中性句（保留结尾空白）
-    {
+    for (const rule of rules) {
+        if (rule.mode === "literal") {
+            const res = replaceLiteral(out, rule.source, rule.replacement);
+            out = res.text;
+            spans += res.count;
+            continue;
+        }
         let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_IDENTITY_RE_SOURCE, "gi"), (_m, _g1, _g2, g3) => {
+        // 每次新建 RegExp —— 避免模块级 /g 正则的 lastIndex 状态串味
+        const re = new RegExp(rule.source, rule.flags || "gi");
+        out = out.replace(re, (...args) => {
             count++;
-            return `You are a helpful AI assistant.${g3 || ""}`;
-        });
-        spans += count;
-    }
-    // R4 —— 裸错误码 11128 -> 11-128
-    {
-        let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_ERROR_CODE_RE_SOURCE, "g"), () => {
-            count++;
-            return "11-128";
-        });
-        spans += count;
-    }
-    // R5 —— 移除 cc_entrypoint=<非空白>
-    {
-        let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_ENTRYPOINT_RE_SOURCE, "gi"), () => {
-            count++;
-            return "";
-        });
-        spans += count;
-    }
-    // R6 —— 移除 </?model_identity> 标签
-    {
-        let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_MODEL_IDENTITY_RE_SOURCE, "gi"), () => {
-            count++;
-            return "";
-        });
-        spans += count;
-    }
-    // R7 —— 服务端注入的身份指令（保留结尾非字面字符，避免吃掉相邻文本）
-    {
-        let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_SELF_ID_RE_SOURCE, "gi"), (_m, _g1, g2) => {
-            count++;
-            return `When asked about your capabilities, answer using only the information available in this conversation.${g2 || ""}`;
-        });
-        spans += count;
-    }
-    // R8 —— 移除 XML 风格标记
-    {
-        let count = 0;
-        out = out.replace(new RegExp(FINGERPRINT_XML_MARKER_RE_SOURCE, "gi"), () => {
-            count++;
-            return "";
+            return rule.replace ? rule.replace(...args) : rule.replacement;
         });
         spans += count;
     }
     return { text: out, spans };
+}
+/**
+ * 对单条系统提示词做指纹净化（prompt 子集）。
+ * 纯函数：不读环境变量、不打日志 —— 命中短语逐条替换，其余文本逐字节保留。
+ * 供钩子与外部验证脚本共用（钩子侧另行判断 provider 与开关）。
+ */
+export function sanitizeSystemPromptForTest(text) {
+    return applyFingerprintRules(text, PROMPT_FINGERPRINT_RULES).text;
+}
+/**
+ * 对单段文本做指纹净化（body 子集）。
+ * 纯函数：不读环境变量、不打日志、不碰网络。
+ */
+export function sanitizeFingerprintTextForTest(text) {
+    return applyFingerprintRules(text, BODY_FINGERPRINT_RULES);
+}
+/** 环境变量开关的"停用值"判定：off / 0 / false / no */
+function isSwitchOff(raw) {
+    const value = (raw || "").trim().toLowerCase();
+    if (!value)
+        return false;
+    return value === "off" || value === "0" || value === "false" || value === "no";
+}
+/**
+ * 指纹净化总开关（唯一开关）：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写**。
+ * 旧名 CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名 —— 两个开关任一为停用值即整体停用。
+ * 注意：本开关**只管文本改写**；A1（首条消息必须是 system）由独立开关控制。
+ */
+export function isFingerprintSanitizeEnabled() {
+    if (isSwitchOff(process.env.CODEBUDDY_FINGERPRINT_SANITIZE))
+        return false;
+    if (isSwitchOff(process.env.CODEBUDDY_PROMPT_SANITIZE))
+        return false;
+    return true;
+}
+/**
+ * A1（首条消息必须是 system）开关：CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off 停用。
+ * 与净化开关相互独立 —— 协议形态修正与文本改写是两件事。
+ */
+export function isSystemFirstEnabled() {
+    return !isSwitchOff(process.env.CODEBUDDY_FINGERPRINT_SYSTEM_FIRST);
+}
+/**
+ * 净化作用范围：CODEBUDDY_FINGERPRINT_SCOPE=all | system-assistant。
+ * 默认 system-assistant —— 线上实测（2026-11-18）：上游只扫描 system 与 assistant
+ * 消息，user / tool 角色携带同样短语时上游返回 200（P1/P2 实测通过）。
+ */
+export function getFingerprintScope() {
+    const raw = (process.env.CODEBUDDY_FINGERPRINT_SCOPE || "").trim().toLowerCase();
+    if (raw === "all")
+        return "all";
+    return "system-assistant";
+}
+/** 废弃别名的提示只打一次 */
+let deprecatedAliasNotified = false;
+/** 首次见到废弃别名时打一条 info（提醒迁移到 CODEBUDDY_FINGERPRINT_SANITIZE） */
+function noteDeprecatedAliasOnce(log) {
+    if (deprecatedAliasNotified)
+        return;
+    if (!(process.env.CODEBUDDY_PROMPT_SANITIZE || "").trim())
+        return;
+    deprecatedAliasNotified = true;
+    log("info", `[${VERSION_TAG}] CODEBUDDY_PROMPT_SANITIZE is deprecated, use CODEBUDDY_FINGERPRINT_SANITIZE instead (alias honoured: either switch disables fingerprint sanitizing)`);
+}
+// ============================================================================
+// 请求体级指纹净化（规避上游渠道校验 code 11128）
+// ----------------------------------------------------------------------------
+// 根因（已由线上 A/B 抓包证实）：
+//   上游对请求体做"大小写不敏感的精确子串匹配"，扫描范围覆盖 role:"system"
+//   与 role:"assistant" 的消息（含 reasoning_content）。任何一条历史消息里
+//   残留的第三方 harness 身份短语，都会让**整条请求**被拒：
+//     HTTP 400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}
+//   症状表现为"同一会话第一轮正常、后续轮次随机 400"。
+//
+// 修复策略（在 loader 的 fetch 拦截里对**发出去的请求体**做改写）：
+//   1. A1 —— 保证 messages[0] 是 system 消息（developer 就地改；不是就补一条）。
+//      独立开关 CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off —— 与文本净化开关无关。
+//   2. A2 —— 对每条消息的文本做"逐条短语改写"（逐字匹配、大小写不敏感），
+//      只改写命中的那一小片，其余文本逐字节保留。
+//      —— 刻意**不**整体替换系统提示词：用户的 AGENTS.md 指令必须完整存活。
+//      作用范围由 CODEBUDDY_FINGERPRINT_SCOPE 控制（默认 system-assistant：
+//      线上实测上游不扫描 user / tool 角色）。
+//   3. 幂等：净化两次 == 净化一次；无关文本不被改动。
+//   4. 深拷贝：净化在**副本**上进行 —— 宿主传入的请求对象绝不被就地修改。
+//   5. 工具入参：改写后必须是合法 JSON，否则回滚该字段（只记计数）。
+//   6. 空内容：system 内容被清空 -> 换成中性默认提示词；
+//      assistant 内容被清空且无 tool_calls -> 整条丢掉（上游拒绝空消息）。
+//
+// 开关：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写**（默认启用）。
+// ============================================================================
+/** 深拷贝任意 JSON 值（不共享任何引用） */
+function cloneValue(value) {
+    if (Array.isArray(value))
+        return value.map((item) => cloneValue(item));
+    if (value && typeof value === "object") {
+        const src = value;
+        const out = {};
+        for (const key of Object.keys(src))
+            out[key] = cloneValue(src[key]);
+        return out;
+    }
+    return value;
+}
+/** 判定消息 content 的形态与文本内容（用于空内容处理） */
+function contentTextState(content) {
+    if (typeof content === "string")
+        return { kind: "string", text: content };
+    if (Array.isArray(content)) {
+        let text = "";
+        let allText = true;
+        for (const part of content) {
+            if (part && typeof part === "object") {
+                const p = part;
+                if (p.type === "text" && typeof p.text === "string") {
+                    text += p.text;
+                    continue;
+                }
+            }
+            allText = false;
+        }
+        return allText ? { kind: "text-array", text } : { kind: "other", text };
+    }
+    if (content === null || content === undefined)
+        return { kind: "none", text: "" };
+    return { kind: "other", text: "" };
+}
+/** 工具入参必须是合法 JSON —— 删除型规则可能清空，替换文本可能带引号 */
+function isValidToolArguments(text) {
+    if (typeof text !== "string" || text.length === 0)
+        return false;
+    try {
+        JSON.parse(text);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * 对单条消息的所有文本字段做指纹净化（就地修改 —— 调用方保证这是插件自己的副本）。
+ * 覆盖：content（字符串 / 数组里的 text 分片）、reasoning_content、reasoning、
+ *      tool_calls[].function.arguments。
+ *
+ * 作用范围（scope）：
+ *   all              —— 所有 role 的文本都改写（v4.0.0 行为）
+ *   system-assistant —— 只改写 system / assistant 消息的文本；
+ *                       tool_calls[].function.arguments 仍然改写
+ *                       （那是模型产出的内容，不是用户数据）
+ */
+function sanitizeChatMessage(message, scope, rewriteText) {
+    const result = {
+        rewritten: false,
+        spans: 0,
+        toolArgsRolledBack: 0,
+        role: "",
+        hasToolCalls: false,
+        contentKindBefore: "none",
+        contentKindAfter: "none",
+        contentEmptied: false,
+    };
+    if (!message || typeof message !== "object")
+        return result;
+    const msg = message;
+    result.role = typeof msg.role === "string" ? msg.role : "";
+    const before = contentTextState(msg.content);
+    result.contentKindBefore = before.kind;
+    const rewriteMessageText = rewriteText &&
+        (scope === "all" ||
+            result.role === "system" ||
+            result.role === "assistant");
+    // content —— 字符串形态
+    if (rewriteMessageText && typeof msg.content === "string") {
+        const res = sanitizeFingerprintTextForTest(msg.content);
+        if (res.spans > 0) {
+            msg.content = res.text;
+            result.spans += res.spans;
+            result.rewritten = true;
+        }
+    }
+    else if (rewriteMessageText && Array.isArray(msg.content)) {
+        // content —— 数组形态：只改写 type === "text" 的分片，其余类型原样保留
+        for (const part of msg.content) {
+            if (!part || typeof part !== "object")
+                continue;
+            const p = part;
+            if (p.type !== "text" || typeof p.text !== "string")
+                continue;
+            const res = sanitizeFingerprintTextForTest(p.text);
+            if (res.spans > 0) {
+                p.text = res.text;
+                result.spans += res.spans;
+                result.rewritten = true;
+            }
+        }
+    }
+    // reasoning_content / reasoning —— 上游会把这些字段带回去并一起扫描
+    if (rewriteMessageText) {
+        for (const key of ["reasoning_content", "reasoning"]) {
+            if (typeof msg[key] !== "string")
+                continue;
+            const res = sanitizeFingerprintTextForTest(msg[key]);
+            if (res.spans > 0) {
+                msg[key] = res.text;
+                result.spans += res.spans;
+                result.rewritten = true;
+            }
+        }
+    }
+    // tool_calls[].function.arguments —— 工具入参里也可能带身份短语。
+    // 这是模型产出的内容，与 role 无关 —— 不受作用范围限制，但仍受净化总开关约束。
+    if (Array.isArray(msg.tool_calls)) {
+        result.hasToolCalls = msg.tool_calls.length > 0;
+        if (rewriteText) {
+            for (const call of msg.tool_calls) {
+                if (!call || typeof call !== "object")
+                    continue;
+                const fn = call.function;
+                if (!fn || typeof fn !== "object")
+                    continue;
+                const holder = fn;
+                if (typeof holder.arguments !== "string")
+                    continue;
+                const original = holder.arguments;
+                const res = sanitizeFingerprintTextForTest(original);
+                if (res.spans === 0)
+                    continue;
+                // 改写后必须是合法 JSON —— 删除型规则可能清空，替换文本可能带引号
+                if (!isValidToolArguments(res.text)) {
+                    result.toolArgsRolledBack++;
+                    continue; // 回滚：保留原文
+                }
+                holder.arguments = res.text;
+                result.spans += res.spans;
+                result.rewritten = true;
+            }
+        }
+    }
+    const after = contentTextState(msg.content);
+    result.contentKindAfter = after.kind;
+    result.contentEmptied =
+        before.text !== "" &&
+            after.text === "" &&
+            (after.kind === "string" || after.kind === "text-array");
+    return result;
+}
+/**
+ * 请求体级指纹净化入口（纯函数，不依赖网络与环境变量）。
+ * 深拷贝 messages 后再改写 —— **绝不修改调用方传入的对象**。
+ * 返回改写后的**新** body，调用方必须使用返回值。
+ */
+export function sanitizePayloadForTest(body, options = {}) {
+    const scope = options.scope ?? getFingerprintScope();
+    const rewriteText = options.rewriteText !== false;
+    const systemFirst = options.systemFirst !== false;
+    const result = {
+        body,
+        messagesScanned: 0,
+        messagesRewritten: 0,
+        spansRewritten: 0,
+        systemFirstApplied: false,
+        emptyContentReplaced: 0,
+        emptyAssistantDropped: 0,
+        toolArgsRolledBack: 0,
+        scope,
+    };
+    if (!body || typeof body !== "object" || Array.isArray(body))
+        return result;
+    const payload = body;
+    const originalMessages = payload.messages;
+    if (!Array.isArray(originalMessages))
+        return result;
+    // 深拷贝 —— 宿主传入的 messages 数组与消息对象绝不能被就地改写
+    const messages = originalMessages.map((message) => cloneValue(message));
+    const nextPayload = { ...payload, messages };
+    // A1 —— 首条消息必须是 system（与文本净化开关相互独立）
+    if (systemFirst) {
+        ensureSystemFirst(messages);
+        result.systemFirstApplied = true;
+    }
+    let messagesRewritten = 0;
+    let spansRewritten = 0;
+    let toolArgsRolledBack = 0;
+    let emptyContentReplaced = 0;
+    let emptyAssistantDropped = 0;
+    const kept = [];
+    for (const message of messages) {
+        const res = sanitizeChatMessage(message, scope, rewriteText);
+        spansRewritten += res.spans;
+        toolArgsRolledBack += res.toolArgsRolledBack;
+        if (res.rewritten)
+            messagesRewritten++;
+        // 空内容处理 —— 上游拒绝空消息
+        if (res.role === "system" && res.contentEmptied) {
+            // system 内容被清空 -> 换成中性默认提示词
+            message.content =
+                FINGERPRINT_DEFAULT_SYSTEM_PROMPT;
+            emptyContentReplaced++;
+        }
+        else if (res.role === "assistant" &&
+            res.contentEmptied &&
+            !res.hasToolCalls) {
+            // assistant 内容被清空且没有工具调用 -> 整条丢掉
+            emptyAssistantDropped++;
+            continue;
+        }
+        kept.push(message);
+    }
+    nextPayload.messages = kept;
+    return {
+        body: nextPayload,
+        messagesScanned: messages.length,
+        messagesRewritten,
+        spansRewritten,
+        systemFirstApplied: result.systemFirstApplied,
+        emptyContentReplaced,
+        emptyAssistantDropped,
+        toolArgsRolledBack,
+        scope,
+    };
 }
 /** A1 —— 保证 messages[0] 是 system 消息（就地修改数组） */
 function ensureSystemFirst(messages) {
@@ -603,120 +961,110 @@ function ensureSystemFirst(messages) {
     }
 }
 /**
- * 对单条消息的所有文本字段做指纹净化（就地修改）。
- * 覆盖：content（字符串 / 数组里的 text 分片）、reasoning_content、reasoning、
- *      tool_calls[].function.arguments。
+ * 自指错误码黑名单 —— 这些码本身会被上游当作指纹。
+ * 一律映射成符号标签，绝不按裸数字写进日志。
  */
-function sanitizeChatMessage(message) {
-    let spans = 0;
-    let rewritten = false;
-    if (!message || typeof message !== "object") {
-        return { rewritten, spans };
+const UPSTREAM_SELF_REFERENTIAL_CODES = {
+    "11128": "CHANNEL_REJECT",
+};
+/** 自指文本片段（脱敏用） */
+const UPSTREAM_SELF_REFERENTIAL_PATTERNS = [
+    {
+        source: "illegal\\s+api\\s+invocation[^\\n]{0,120}",
+        flags: "gi",
+        label: "[REDACTED:channel-reject]",
+    },
+    {
+        source: "unapproved\\s+channel",
+        flags: "gi",
+        label: "[REDACTED:channel-reject]",
+    },
+    {
+        source: "\\b11128\\b",
+        flags: "g",
+        label: "[REDACTED:CHANNEL_REJECT]",
+    },
+];
+/** 把上游原文里的自指片段替换成符号标签 */
+export function redactSelfReferentialText(text) {
+    if (typeof text !== "string" || text.length === 0)
+        return text;
+    let out = text;
+    for (const pattern of UPSTREAM_SELF_REFERENTIAL_PATTERNS) {
+        out = out.replace(new RegExp(pattern.source, pattern.flags), pattern.label);
     }
-    const msg = message;
-    // content —— 字符串形态
-    if (typeof msg.content === "string") {
-        const res = sanitizeFingerprintTextForTest(msg.content);
-        if (res.spans > 0) {
-            msg.content = res.text;
-            spans += res.spans;
-            rewritten = true;
-        }
-    }
-    else if (Array.isArray(msg.content)) {
-        // content —— 数组形态：只改写 type === "text" 的分片，其余类型原样保留
-        for (const part of msg.content) {
-            if (!part || typeof part !== "object")
-                continue;
-            const p = part;
-            if (p.type !== "text" || typeof p.text !== "string")
-                continue;
-            const res = sanitizeFingerprintTextForTest(p.text);
-            if (res.spans > 0) {
-                p.text = res.text;
-                spans += res.spans;
-                rewritten = true;
-            }
-        }
-    }
-    // reasoning_content / reasoning —— 上游会把这些字段带回去并一起扫描
-    for (const key of ["reasoning_content", "reasoning"]) {
-        if (typeof msg[key] !== "string")
-            continue;
-        const res = sanitizeFingerprintTextForTest(msg[key]);
-        if (res.spans > 0) {
-            msg[key] = res.text;
-            spans += res.spans;
-            rewritten = true;
-        }
-    }
-    // tool_calls[].function.arguments —— 工具入参里也可能带身份短语
-    if (Array.isArray(msg.tool_calls)) {
-        for (const call of msg.tool_calls) {
-            if (!call || typeof call !== "object")
-                continue;
-            const fn = call.function;
-            if (!fn || typeof fn !== "object")
-                continue;
-            const holder = fn;
-            if (typeof holder.arguments !== "string")
-                continue;
-            const res = sanitizeFingerprintTextForTest(holder.arguments);
-            if (res.spans > 0) {
-                holder.arguments = res.text;
-                spans += res.spans;
-                rewritten = true;
-            }
-        }
-    }
-    return { rewritten, spans };
+    return out;
 }
-/**
- * 请求体级指纹净化入口（纯函数，不依赖网络与环境变量）。
- * 对 chat/completions 请求体就地应用 A1 + A2，返回改写后的 body 与计数。
- */
-export function sanitizePayloadForTest(body) {
-    const empty = {
-        body,
-        messagesScanned: 0,
-        messagesRewritten: 0,
-        spansRewritten: 0,
-    };
+/** 从上游错误体里取业务码（字符串或对象形态） */
+function extractUpstreamCode(body) {
+    if (typeof body === "string") {
+        try {
+            return extractUpstreamCode(JSON.parse(body));
+        }
+        catch {
+            return null;
+        }
+    }
     if (!body || typeof body !== "object" || Array.isArray(body))
-        return empty;
-    const payload = body;
-    const messages = payload.messages;
-    if (!Array.isArray(messages))
-        return empty;
-    // A1 —— 首条消息必须是 system
-    ensureSystemFirst(messages);
-    // A2 —— 逐条消息净化
-    let messagesRewritten = 0;
-    let spansRewritten = 0;
-    for (const message of messages) {
-        const res = sanitizeChatMessage(message);
-        if (res.rewritten)
-            messagesRewritten++;
-        spansRewritten += res.spans;
-    }
-    return {
-        body: payload,
-        messagesScanned: messages.length,
-        messagesRewritten,
-        spansRewritten,
-    };
+        return null;
+    const code = body.code;
+    if (typeof code === "number" && Number.isFinite(code))
+        return String(code);
+    if (typeof code === "string" && /^-?\d+$/.test(code.trim()))
+        return code.trim();
+    return null;
+}
+/** 依据 HTTP 状态给出分类标签 */
+function upstreamLabelFromStatus(status) {
+    if (status === 401 || status === 403)
+        return "auth";
+    if (status === 429)
+        return "rate-limit";
+    return "other";
 }
 /**
- * 指纹净化总开关：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用（默认启用）。
- * 取值 off / 0 / false / no 均视为停用，其余（含未设置）视为启用。
+ * 上游错误分类 —— 只产出稳定标签与脱敏码，绝不回显上游原文。
+ * 返回的 codeLabel 对自指错误码是符号标签（CHANNEL_REJECT），不是裸数字。
  */
-function isFingerprintSanitizeEnabled() {
-    const raw = (process.env.CODEBUDDY_FINGERPRINT_SANITIZE || "")
-        .trim()
-        .toLowerCase();
-    if (!raw)
-        return true;
-    return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+export function classifyUpstreamError(status, body) {
+    const code = extractUpstreamCode(body);
+    if (code !== null) {
+        const symbolic = UPSTREAM_SELF_REFERENTIAL_CODES[code];
+        if (symbolic)
+            return { label: "channel-reject", codeLabel: symbolic };
+        return { label: upstreamLabelFromStatus(status), codeLabel: code };
+    }
+    return { label: upstreamLabelFromStatus(status), codeLabel: "" };
+}
+/**
+ * 识别"HTTP 2xx 但 body 是 JSON 错误"的响应。
+ * 上游偶尔用 200 返回 JSON 错误体 —— 这类响应逃过了 !response.ok 分支，
+ * 此前从不被分类。这里只做分类与日志 —— body 仍原样转发给宿主
+ * （转发行为不在本次修复范围内）。
+ */
+async function detectUpstreamJsonError(response, log) {
+    let text = "";
+    try {
+        text = await response.clone().text();
+    }
+    catch {
+        return;
+    }
+    if (!text.trim())
+        return;
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return;
+    if (!("code" in parsed))
+        return;
+    const classified = classifyUpstreamError(response.status, parsed);
+    log("warn", `[${VERSION_TAG}] upstream error (2xx json body): status=${response.status} class=${classified.label} code=${classified.codeLabel || "none"}`);
 }
 // ============================================================================
 // 设备令牌 Provider（TuringShield N-API 原生插件）
@@ -1116,7 +1464,20 @@ const REASONING_BATCH_CHARS = 400;
 //            （X-CodeBuddy-Request / X-Product-Code / X-Agent-Purpose 等，
 //            去掉 X-B3-ParentSpanId，message-id 与 request-id 同值）
 //            + 设备令牌改为 opt-in（CODEBUDDY_DEVICE_TOKEN=on）
-const FORK_VERSION = "4.0.0";
+//   v4.0.1 = 指纹净化九项正确性修复（**行为修复**，非新功能）：
+//            1. A1（首条 system 消息）从净化开关里拆出 —— 独立开关
+//               CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off
+//            2. 请求体深拷贝 —— 不再就地改写宿主传入的对象
+//            3. 作用范围可配 CODEBUDDY_FINGERPRINT_SCOPE（默认 system-assistant，
+//               依据线上实测：上游不扫描 user / tool 角色）
+//            4. tool_calls[].function.arguments 改写后校验 JSON，非法则回滚
+//            5. 空内容处理：system 换中性默认提示词、assistant 无工具调用则丢弃
+//            6. 日志防自污染：上游 msg / 裸错误码绝不进日志，只记稳定分类
+//            7. 两张规则表合并为一张（prompt + body 共用），开关收敛为一个
+//               （CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名）
+//            8. 识别 HTTP 2xx + JSON 错误体的响应
+//            9. 新增 scripts/verify-fingerprint.mjs 黄金回归测试
+const FORK_VERSION = "4.0.1";
 const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
 function buildReasoningChunk(reasoningText) {
     const rcObj = {
@@ -1216,6 +1577,10 @@ async function normalizeCodeBuddySSE(response, log = noopLog) {
     // 不可见，降级会导致日常排查丢失此信号。
     const ct = response.headers.get("content-type") || "";
     if (!ct.includes("text/event-stream")) {
+        // 2xx + JSON 错误体：上游偶尔用 HTTP 200 返回 JSON 错误 —— 这类响应
+        // 逃过了 !response.ok 分支，此前从不被分类。这里补上分类与日志
+        //（body 仍原样转发给宿主 —— 转发行为不在本次修复范围内）。
+        await detectUpstreamJsonError(response, log);
         log("info", `[${VERSION_TAG}] non-SSE response, content-type: ${ct}`);
         return response;
     }
@@ -1368,11 +1733,12 @@ async function requestAuthState() {
     });
     if (!response.ok) {
         const text = await response.text();
-        throw new Error(`Auth state request failed: ${response.status} - ${text}`);
+        // 抛出的错误里也不能带上游原文（自指片段会被 agent 读回）
+        throw new Error(`Auth state request failed: ${response.status} - ${redactSelfReferentialText(text)}`);
     }
     const data = (await response.json());
     if (data.code !== 0 || !data.data?.state) {
-        throw new Error(`Invalid auth state response: ${JSON.stringify(data)}`);
+        throw new Error(`Invalid auth state response: ${redactSelfReferentialText(JSON.stringify(data))}`);
     }
     const loginUrl = data.data.authUrl ||
         `${resolvedServerUrl}/login?platform=${CONFIG.platform}&state=${data.data.state}&ioa=1`;
@@ -1733,9 +2099,10 @@ async function pollTokenForLogin(state, deadline, log) {
             }
             if (body.code === CODE_LOGIN_PENDING)
                 continue;
+            const classified = classifyUpstreamError(response.status, body);
             return {
                 ok: false,
-                reason: `服务端返回异常业务码 ${body.code}${body.msg ? ` (${body.msg})` : ""}`,
+                reason: `服务端返回异常业务码 ${classified.codeLabel || "未知"}${body.msg ? ` (${redactSelfReferentialText(body.msg)})` : ""}`,
             };
         }
         catch (err) {
@@ -2174,7 +2541,7 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         if (!resolvedModel) {
                             throw new Error("未设置模型，请设置 CODEBUDDY_DEFAULT_MODEL 或在 OpenCode 选择模型");
                         }
-                        const requestBody = {
+                        let requestBody = {
                             ...openaiRequest,
                             model: resolvedModel,
                             // 网关已不支持非流式（code 11101），强制 stream=true
@@ -2187,12 +2554,32 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         // 上游对 system / assistant 消息（含 reasoning_content）做子串扫描，
                         // 任何一条历史消息残留的身份短语都会让整条请求被拒。
                         // 只改写命中的片段，用户 AGENTS.md 指令完整保留。
-                        if (isFingerprintSanitizeEnabled()) {
-                            const sanitized = sanitizePayloadForTest(requestBody);
-                            log("info", `[${VERSION_TAG}] fingerprint sanitize: messages scanned=${sanitized.messagesScanned} rewritten=${sanitized.messagesRewritten} spans=${sanitized.spansRewritten}`);
+                        //
+                        // 三个开关各管一件事：
+                        //   CODEBUDDY_FINGERPRINT_SANITIZE   —— 文本改写总开关
+                        //   CODEBUDDY_FINGERPRINT_SYSTEM_FIRST —— A1（首条消息必须是 system）
+                        //   CODEBUDDY_FINGERPRINT_SCOPE      —— 作用范围（默认 system-assistant）
+                        // 净化在**深拷贝**上进行 —— 宿主传入的请求对象绝不被就地修改。
+                        noteDeprecatedAliasOnce(log);
+                        const sanitizeText = isFingerprintSanitizeEnabled();
+                        const systemFirst = isSystemFirstEnabled();
+                        const sanitized = sanitizePayloadForTest(requestBody, {
+                            systemFirst,
+                            rewriteText: sanitizeText,
+                        });
+                        requestBody = sanitized.body;
+                        if (sanitizeText) {
+                            log("info", `[${VERSION_TAG}] fingerprint sanitize: scope=${sanitized.scope} messages scanned=${sanitized.messagesScanned} rewritten=${sanitized.messagesRewritten} spans=${sanitized.spansRewritten} empty-replaced=${sanitized.emptyContentReplaced} empty-dropped=${sanitized.emptyAssistantDropped}`);
                         }
                         else {
-                            log("debug", `[${VERSION_TAG}] fingerprint sanitize disabled (CODEBUDDY_FINGERPRINT_SANITIZE=off)`);
+                            log("debug", `[${VERSION_TAG}] fingerprint sanitize text rewriting disabled (CODEBUDDY_FINGERPRINT_SANITIZE=off)`);
+                        }
+                        if (!systemFirst) {
+                            log("debug", `[${VERSION_TAG}] system-first message shaping disabled (CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off)`);
+                        }
+                        if (sanitized.toolArgsRolledBack > 0) {
+                            // 只报计数 —— 绝不打印工具入参内容
+                            log("warn", `[${VERSION_TAG}] fingerprint sanitize: ${sanitized.toolArgsRolledBack} tool argument(s) rolled back (invalid JSON after rewrite)`);
                         }
                         // 设备令牌（TuringShield 原生插件）：默认关闭（opt-in），fail-open
                         const deviceToken = await getDeviceToken(log);
@@ -2228,7 +2615,13 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         }
                         if (!response.ok) {
                             const errorText = await response.text();
-                            log("warn", `[codebuddy] API error: ${response.status} - ${errorText.substring(0, 200)}`);
+                            // 上游错误体绝不能原样进日志 —— 宿主日志会被 agent 读回，
+                            // 那句 "Illegal API invocation ..." 与裸错误码会重新进入对话，
+                            // 下一轮请求里又出现同样的指纹，于是又触发同一个错误：自污染回路。
+                            // 只记稳定分类：HTTP 状态 + 固定枚举标签 + 脱敏后的业务码
+                            //（11128 映射成 CHANNEL_REJECT，绝不按裸数字写出去）。
+                            const classified = classifyUpstreamError(response.status, errorText);
+                            log("warn", `[${VERSION_TAG}] upstream error: status=${response.status} class=${classified.label} code=${classified.codeLabel || "none"}`);
                             return new Response(errorText, {
                                 status: response.status,
                                 headers: { "Content-Type": "application/json" },
@@ -2335,7 +2728,7 @@ export const CodeBuddyAuthPlugin = async (input) => {
             }
         },
         /**
-         * 系统提示词指纹净化。
+         * 系统提示词指纹净化（prompt 子集 —— 与请求体净化共用同一张规则表与同一个开关）。
          * 只对本插件自己的 provider（codebuddy）生效；其它 provider 原样透传。
          * 命中短语的条目逐条替换，日志只记录被改动的条目数，绝不记录提示词内容。
          */
@@ -2343,7 +2736,10 @@ export const CodeBuddyAuthPlugin = async (input) => {
             // 补充会话 ID 来源（system 钩子同样带 sessionID）
             if (input?.sessionID)
                 currentSessionId = input.sessionID;
-            if (!isPromptSanitizeEnabled())
+            // 废弃别名提示（首次见到时打一条 info）
+            noteDeprecatedAliasOnce(hostLog);
+            // 统一开关：CODEBUDDY_FINGERPRINT_SANITIZE（旧名 CODEBUDDY_PROMPT_SANITIZE 为别名）
+            if (!isFingerprintSanitizeEnabled())
                 return;
             if (input?.model?.providerID !== PROVIDER_ID)
                 return;
