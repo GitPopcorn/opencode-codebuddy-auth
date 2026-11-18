@@ -36,9 +36,31 @@ npm install && npm run build   # tsc 编译到仓库根目录（index.js + index
 
 ### 核心 Hooks
 
-1. **config** — 启动时从 `~/.local/share/opencode/auth.json` 读取已保存的 access token，调用 `GET /v3/config` 动态获取 craft agent 可用模型，注入到 `config.provider.codebuddy.models`；未登录或获取失败时 fallback 为 `auto` 默认模型；不覆盖用户手动声明的 models
+1. **config** — 启动时从 `~/.local/share/opencode/auth.json` 读取已保存的 access token，调用 `GET /v3/config` 动态获取 craft agent 可用模型，注入到 `config.provider.codebuddy.models`；未登录或获取失败时 fallback 为 `auto` 默认模型；不覆盖用户手动声明的 models。v3.6.0 起：凭据临近过期会先主动刷新并落盘，模型发现成功与失败都会记日志
 2. **auth** — IOA OAuth 登录流程（浏览器 → 轮询 token），loader 返回自定义 fetch 拦截请求
-3. **chat.params** — 设置 baseURL
+3. **chat.params** — 设置 baseURL，并捕获 `sessionID` 供 `X-Conversation-ID` 派生
+4. **event** — v3.9.0 起监听 `session.error`，命中 `ProviderAuthError` 或 401 与 403 时自动刷新凭据并提示重试；`command.executed` 作为命令的兜底入口
+5. **command.execute.before** — 拦截 `/codebuddy-login` 与 `/codebuddy-doctor`，原地清空 `output.parts` 并中止会话（宿主对任何命令都会强起一个 assistant turn）
+6. **experimental.chat.system.transform** — 按跨度改写 system prompt 中的第三方身份指纹
+
+### 凭据自愈与指纹净化
+
+- 启动期自检：无凭据或刷新失败 → 自动拉起浏览器重登（`plugin/auth/state` → 浏览器 → 轮询 `plugin/auth/token`，`11217` 表示登录中）→ 经 `client.auth.set` 落盘
+- 会话内自愈：`event` 钩子捕获 401 与 403 → 自动刷新 → toast 提示重试（不自动重放用户消息，避免副作用重复）
+- 账号切换检测：sidecar `~/.local/share/opencode/codebuddy-account.json` 记录 `uid` 与 `nickname`，与当前令牌绑定账号不一致即提示
+- 渠道指纹净化：出站 body 按**跨度改写**（不是整条替换 system，用户 AGENTS.md 指令完整保留），覆盖 `content`、`reasoning_content`、`reasoning` 与工具参数
+- 用户命令：`/codebuddy-login` 主动重登，`/codebuddy-doctor` 输出体检结论
+
+### 环境变量开关
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `CODEBUDDY_FINGERPRINT_SANITIZE` | 开启 | 置 `off` 关闭出站 body 的指纹净化 |
+| `CODEBUDDY_DEVICE_TOKEN` | 关闭 | 置 `on` 才附带自签的 `X-Device-Token` |
+| `CODEBUDDY_TURING_NATIVE` | 自动发现 | 指定 TuringShield 原生插件路径（文件或目录均可） |
+| `CODEBUDDY_TURING_NATIVE_DISABLED` | 未设置 | 置 `1` 完全关闭设备令牌能力 |
+| `CODEBUDDY_PROMPT_SANITIZE` | 开启 | 置 `off` 关闭 system prompt 净化钩子 |
+| `CODEBUDDY_DEFAULT_MODEL` | 空 | 强制覆盖用户所选模型 |
 
 ### SSE 处理（本地补丁核心，`normalizeCodeBuddySSE`）
 
@@ -80,6 +102,8 @@ npm install && npm run build   # tsc 编译到仓库根目录（index.js + index
 - 日志均通过 `input.client.app.log()`（service=`codebuddy-fork`）写入
   `~/.local/share/opencode/log/opencode.log`，带 `[codebuddy-fork-vX.Y.Z]` 前缀
 - OpenCode `client.app.log()` 级别枚举仅 `debug / info / warn / error`（**无 TRACE**）
+- 账号 sidecar：`~/.local/share/opencode/codebuddy-account.json` 记录当前绑定账号的 `uid` 与 `nickname`，用于账号切换检测
+- 体检命令：`/codebuddy-doctor` 输出凭据、到期时间、刷新可行性、模型数、设备令牌与绑定账号（也可在进程外调用 `diagnoseForTest()`）
 
 ---
 
