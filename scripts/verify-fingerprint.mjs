@@ -13,6 +13,8 @@
  *   6. 作用范围：system-assistant（默认）不改 user / tool，all 改；
  *   7. 开关：净化总开关 / system-first 开关 / 作用范围开关 / 废弃别名；
  *   8. 日志防自污染：失败路径写出的日志里不含 11128 与上游原句。
+ *   9. 请求头契约：对齐官方 CodeBuddy IDE 4.12.4 抓包（ID 形态与作用域、
+ *      b3 家族、客户端埋点时间戳、已删除的冗余头、版本号）。
  *
  * 依赖：只依赖仓库根目录的构建产物 index.js（零第三方运行时依赖）。
  */
@@ -27,6 +29,7 @@ const {
   isSystemFirstEnabled,
   getFingerprintScope,
   CodeBuddyAuthPlugin,
+  buildAuthHeadersForTest,
 } = mod;
 
 /** 断言失败收集器 */
@@ -566,6 +569,119 @@ async function runFailurePath(status, headers, body) {
       `log line leaked "${needle}": ${JSON.stringify(logs)}`,
     );
   }
+  caseCount++;
+}
+
+// ============================================================================
+// 9. 请求头契约（对齐官方 CodeBuddy IDE 4.12.4 抓包）
+// ============================================================================
+
+{
+  const HEX32 = /^[0-9a-f]{32}$/;
+  const HEX16 = /^[0-9a-f]{16}$/;
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const DIGITS13 = /^\d{13}$/;
+
+  const a1 = buildAuthHeadersForTest("dummy-access-token", "auto", "", "ses_a");
+  const a2 = buildAuthHeadersForTest("dummy-access-token", "auto", "", "ses_a");
+  const b = buildAuthHeadersForTest("dummy-access-token", "auto", "", "ses_b");
+
+  // --- ID 形态 ---
+  for (const name of [
+    "X-Conversation-ID",
+    "X-Trace-ID",
+    "X-B3-TraceId",
+    "X-Request-ID",
+    "X-Conversation-Request-ID",
+    "X-Conversation-Message-ID",
+  ]) {
+    checkTrue(`headers[${name}] shape 32 lowercase hex`, HEX32.test(a1[name]), `actual: ${JSON.stringify(a1[name])}`);
+  }
+  for (const name of ["X-B3-ParentSpanId", "X-B3-SpanId"]) {
+    checkTrue(`headers[${name}] shape 16 lowercase hex`, HEX16.test(a1[name]), `actual: ${JSON.stringify(a1[name])}`);
+  }
+  checkTrue(
+    "headers[X-Request-Trace-Id] shape UUID v4",
+    UUID_V4.test(a1["X-Request-Trace-Id"]),
+    `actual: ${JSON.stringify(a1["X-Request-Trace-Id"])}`,
+  );
+
+  // --- 同值关系 ---
+  check("headers[X-Trace-ID === X-B3-TraceId]", a1["X-B3-TraceId"], a1["X-Trace-ID"]);
+  check("headers[X-Request-ID === X-Conversation-Request-ID]", a1["X-Conversation-Request-ID"], a1["X-Request-ID"]);
+  checkTrue(
+    "headers[X-Conversation-Message-ID differs from X-Request-ID]",
+    a1["X-Conversation-Message-ID"] !== a1["X-Request-ID"],
+    "message id equals request id",
+  );
+
+  // --- b3 派生 ---
+  check(
+    "headers[b3 derivation]",
+    a1.b3,
+    `${a1["X-Trace-ID"]}-${a1["X-B3-SpanId"]}-1-${a1["X-B3-ParentSpanId"]}`,
+  );
+
+  // --- 会话维度：同会话恒定，跨会话不同 ---
+  for (const name of ["X-Conversation-ID", "X-Trace-ID", "X-B3-TraceId", "X-B3-ParentSpanId"]) {
+    check(`headers[${name}] stable within session`, a2[name], a1[name]);
+    checkTrue(
+      `headers[${name}] differs across sessions`,
+      a1[name] !== b[name],
+      `ses_a and ses_b produced the same value for ${name}`,
+    );
+  }
+
+  // --- 请求维度：每请求新值 ---
+  for (const name of ["X-Request-ID", "X-Conversation-Message-ID", "X-B3-SpanId", "X-Request-Trace-Id"]) {
+    checkTrue(
+      `headers[${name}] fresh per request`,
+      a1[name] !== a2[name],
+      `${name} repeated across two builds`,
+    );
+  }
+
+  // --- 客户端埋点时间戳 ---
+  for (const name of ["monitor_promptpreparestarttime", "monitor_httpsendtime"]) {
+    checkTrue(
+      `headers[${name}] 13-digit numeric string`,
+      typeof a1[name] === "string" && DIGITS13.test(a1[name]),
+      `actual: ${JSON.stringify(a1[name])}`,
+    );
+  }
+  checkTrue(
+    "headers[monitor_httpsendtime >= monitor_promptpreparestarttime]",
+    Number(a1.monitor_httpsendtime) >= Number(a1.monitor_promptpreparestarttime),
+    `prepare=${a1.monitor_promptpreparestarttime} send=${a1.monitor_httpsendtime}`,
+  );
+
+  // --- 已删除的冗余头 ---
+  for (const name of [
+    "X-CodeBuddy-Request",
+    "X-Product-Code",
+    "X-Private-Data",
+    "X-Agent-Purpose",
+    "X-Root-Request-ID",
+    "Origin",
+    "Referer",
+  ]) {
+    checkTrue(
+      `headers[${name}] absent`,
+      !Object.prototype.hasOwnProperty.call(a1, name),
+      `stale header still present: ${name}`,
+    );
+  }
+
+  // --- 保留的头与版本号 ---
+  check("headers[X-Agent-Intent]", a1["X-Agent-Intent"], "craft");
+  check("headers[X-Agent-Type]", a1["X-Agent-Type"], "main");
+  check("headers[X-Model-ID]", a1["X-Model-ID"], "auto");
+  check("headers[X-Product]", a1["X-Product"], "SaaS");
+  check("headers[X-Requested-With]", a1["X-Requested-With"], "XMLHttpRequest");
+  check("headers[X-IDE-Version]", a1["X-IDE-Version"], "4.12.4");
+  check("headers[X-Product-Version]", a1["X-Product-Version"], "4.12.4");
+  check("headers[User-Agent]", a1["User-Agent"], "CodeBuddyIDE/4.12.4 CodeBuddy/4.12.4");
+
   caseCount++;
 }
 

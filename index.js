@@ -10,11 +10,11 @@ const CONFIG = {
     chatCompletionsPath: "/v2/chat/completions",
     platform: "VSCode",
     // 版本号单一真源：UA 首段（ideName/ideVersion）与 X-IDE-Version / X-Product-Version
-    // 必须同源同值 —— 对齐官方 CodeBuddy IDE 4.12.0 抓包。
-    appVersion: "4.12.0",
+    // 必须同源同值 —— 对齐官方 CodeBuddy IDE 4.12.4 抓包。
+    appVersion: "4.12.4",
     ideName: "CodeBuddyIDE",
     ideType: "CodeBuddyIDE",
-    ideVersion: "4.12.0",
+    ideVersion: "4.12.4",
     domain: "www.codebuddy.cn",
     product: "SaaS",
     agentIntent: "craft",
@@ -31,7 +31,8 @@ let resolvedServerUrl = CONFIG.serverUrl;
 let resolvedDomain = CONFIG.domain;
 /**
  * 当前会话 ID —— 由 chat.params / experimental.chat.system.transform 两个钩子捕获。
- * 用途：稳定派生 X-Conversation-ID（同一会话恒定同一值）。
+ * 用途：稳定派生会话维度 ID（X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId，
+ * 同一会话恒定同一值）。
  */
 let currentSessionId = "";
 /**
@@ -277,57 +278,64 @@ function resolveModel(inputModel) {
         return CONFIG.defaultModel;
     return inputModel || "";
 }
-function generateTraceId() {
+/** 生成 32 位小写十六进制 ID（16 字节随机）—— 官方客户端的 ID 形态（X-Request-Trace-Id 除外） */
+function generateHex32() {
     const bytes = new Uint8Array(16);
     globalThis.crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
-/**
- * 由会话 ID 稳定派生 X-Conversation-ID。
- * 做法：sha256(sessionID) → 取前 16 字节 → 按 UUID v4 规则设置版本位与 variant 位。
- * 同一会话恒得同一值（官方客户端的 X-Conversation-ID 是"一段对话内稳定"的）。
- */
-function deriveConversationIdFromSession(sessionId) {
-    const digest = createHash("sha256").update(sessionId, "utf8").digest();
-    const bytes = Buffer.from(digest.subarray(0, 16));
-    // 版本位 (4) 与 variant 位 (10)
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = bytes.toString("hex");
-    return [
-        hex.slice(0, 8),
-        hex.slice(8, 12),
-        hex.slice(12, 16),
-        hex.slice(16, 20),
-        hex.slice(20, 32),
-    ].join("-");
+/** 生成 16 位小写十六进制 ID（8 字节随机）—— X-B3-SpanId / X-B3-ParentSpanId 的形态 */
+function generateHex16() {
+    const bytes = new Uint8Array(8);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
-/** 取 X-Conversation-ID：会话已知则稳定派生，会话未知则退化为每请求 UUID */
-function resolveConversationId(sessionId) {
+function deriveSessionScopedIds(sessionId) {
+    const digest = createHash("sha256").update(sessionId, "utf8").digest();
+    const conversationId = digest.subarray(0, 16).toString("hex");
+    const traceId = digest.subarray(16, 32).toString("hex");
+    const parentSpanId = createHash("sha256")
+        .update(digest)
+        .digest()
+        .subarray(0, 8)
+        .toString("hex");
+    return { conversationId, traceId, parentSpanId };
+}
+/** 取会话维度 ID：会话已知则稳定派生，会话未知则退化为每请求随机值 */
+function resolveSessionScopedIds(sessionId) {
     const sid = (sessionId || "").trim();
-    if (!sid)
-        return generateUuidV4();
-    return deriveConversationIdFromSession(sid);
+    if (!sid) {
+        return {
+            conversationId: generateHex32(),
+            traceId: generateHex32(),
+            parentSpanId: generateHex16(),
+        };
+    }
+    return deriveSessionScopedIds(sid);
 }
 function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId) {
     const tenantId = resolveTenantId(accessToken);
     const enterpriseId = resolveEnterpriseId(accessToken);
     const userId = resolveUserId(accessToken);
-    // X-Conversation-ID：按会话稳定（官方客户端一段对话内只用同一个值）
-    const conversationId = resolveConversationId(sessionId ?? currentSessionId);
-    // X-Request-ID 与 X-Conversation-Request-ID 必须是同一个值 —— 一个请求一个 UUID v4
-    const requestId = generateUuidV4();
-    // X-Conversation-Message-ID 与 X-Request-ID 同值（官方抓包：两者共用一个 32 位标识）
-    // traceId 保留 16 位十六进制形态 —— b3 / X-B3-* 属于同一 trace 家族，
-    // 官方客户端只在特定内部路径设置 b3，这里维持原样以免破坏 trace 关联。
-    // X-Trace-ID 与 X-B3-TraceId 同值，且是 b3 的第一段。
-    const traceId = generateTraceId();
-    const spanId = generateTraceId().slice(0, 16);
-    const parentSpanId = generateTraceId().slice(0, 16);
+    // 会话维度（一段对话内恒定）：X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId
+    const scopedIds = resolveSessionScopedIds(sessionId ?? currentSessionId);
+    const conversationId = scopedIds.conversationId;
+    const traceId = scopedIds.traceId;
+    const parentSpanId = scopedIds.parentSpanId;
+    // 请求维度（每请求新生成）：
+    // X-Request-ID 与 X-Conversation-Request-ID 必须同值；
+    // X-Conversation-Message-ID 必须是另一个独立的 32 位标识。
+    const requestId = generateHex32();
+    let conversationMessageId = generateHex32();
+    while (conversationMessageId === requestId) {
+        conversationMessageId = generateHex32();
+    }
+    const spanId = generateHex16();
     // 官方客户端的 X-Request-Trace-Id 是 UUID v4，与 b3 家族无关，单独生成
     const requestTraceId = generateUuidV4();
-    // X-Root-Request-ID：官方客户端每个请求一个新 UUID
-    const rootRequestId = generateUuidV4();
+    // 客户端埋点：两个 13 位毫秒时间戳（官方抓包中发送时间比准备时间晚约 30ms）
+    const httpSendTime = Date.now();
+    const promptPrepareStartTime = httpSendTime - 30;
     const headers = {
         Accept: "application/json, text/plain, */*",
         "Content-Type": "application/json",
@@ -336,32 +344,27 @@ function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId) {
         "X-Request-ID": requestId,
         "X-Conversation-ID": conversationId,
         "X-Conversation-Request-ID": requestId,
-        "X-Conversation-Message-ID": requestId,
+        "X-Conversation-Message-ID": conversationMessageId,
         "X-Agent-Intent": CONFIG.agentIntent,
         "X-Agent-Type": CONFIG.agentType,
-        "X-Agent-Purpose": "conversation",
         "X-IDE-Type": CONFIG.ideType,
         "X-IDE-Name": CONFIG.ideName,
         "X-IDE-Version": CONFIG.ideVersion,
         "X-Product-Version": CONFIG.appVersion,
-        "X-Product-Code": "codebuddy",
-        "X-Private-Data": "false",
-        // X-CodeBuddy-Request：社区实现里出现频率最高的协议头
-        "X-CodeBuddy-Request": "1",
         "X-Request-Trace-Id": requestTraceId,
-        "X-Root-Request-ID": rootRequestId,
         "X-Env-ID": CONFIG.envId,
         "X-Domain": resolvedDomain,
         "X-Product": CONFIG.product,
         "User-Agent": `${CONFIG.ideName}/${CONFIG.ideVersion} CodeBuddy/${CONFIG.appVersion}`,
         "Accept-Language": "zh-CN",
-        Origin: `https://${resolvedDomain}`,
-        Referer: `https://${resolvedDomain}/`,
         "X-Trace-ID": traceId,
         b3: `${traceId}-${spanId}-1-${parentSpanId}`,
         "X-B3-TraceId": traceId,
         "X-B3-SpanId": spanId,
+        "X-B3-ParentSpanId": parentSpanId,
         "X-B3-Sampled": "1",
+        monitor_promptpreparestarttime: String(promptPrepareStartTime),
+        monitor_httpsendtime: String(httpSendTime),
     };
     if (tenantId)
         headers["X-Tenant-Id"] = tenantId;
@@ -1577,7 +1580,17 @@ const REASONING_BATCH_CHARS = 400;
 //               （CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名）
 //            8. 识别 HTTP 2xx + JSON 错误体的响应
 //            9. 新增 scripts/verify-fingerprint.mjs 黄金回归测试
-const FORK_VERSION = "4.1.0";
+//   v4.2.0 = 按官方 CodeBuddy IDE 4.12.4 抓包对齐请求头：
+//            1. 补客户端埋点头 monitor_promptpreparestarttime / monitor_httpsendtime
+//               （两个 13 位毫秒时间戳，修复用量页"请求 / 提示词"列恒空）
+//            2. X-IDE-Version / X-Product-Version / UA 升到 4.12.4
+//            3. 恢复 X-B3-ParentSpanId（16 hex，会话内恒定）
+//            4. 删除官方从不发送的 X-CodeBuddy-Request / X-Product-Code /
+//               X-Private-Data / X-Agent-Purpose / X-Root-Request-ID / Origin / Referer
+//            5. ID 形态改为 32 位小写 hex（X-Request-Trace-Id 仍为 UUID v4），
+//               X-Conversation-Message-ID 不再与 X-Request-ID 同值，
+//               会话维度 ID 由 sha256(sessionID) 稳定派生
+const FORK_VERSION = "4.2.0";
 const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
 function buildReasoningChunk(reasoningText) {
     const rcObj = {
@@ -2763,7 +2776,7 @@ export const CodeBuddyAuthPlugin = async (input) => {
             ],
         },
         async "chat.params"(input, output) {
-            // 捕获会话 ID —— 用于稳定派生 X-Conversation-ID（同一会话恒定同一值）
+            // 捕获会话 ID —— 用于稳定派生会话维度 ID（X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId）
             if (input?.sessionID)
                 currentSessionId = input.sessionID;
             if (input.model.providerID !== PROVIDER_ID)
