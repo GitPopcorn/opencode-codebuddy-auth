@@ -1,5 +1,16 @@
 import type { Plugin } from "@opencode-ai/plugin";
 /**
+ * 生成注入 `config.provider.codebuddy.models[].name` 的展示名。
+ * - 幂等：已带 `[自配][CDBD] ` 前缀时先剥掉再重新加，绝不复利叠加
+ * - 兜底：名称为空或只有分隔符时，依次回退到 fallbackId 与 `Model`，不抛错
+ * - 只处理展示名，模型 id 由调用方单独保留，绝不经此处改写
+ */
+export declare function formatModelDisplayName(rawName: string, fallbackId?: string): string;
+/**
+ * `formatModelDisplayName` 的验证入口 —— 供离线断言脚本直接调用。
+ */
+export declare function formatModelDisplayNameForTest(rawName: string, fallbackId?: string): string;
+/**
  * 供外部脚本验证请求头构造（不打印令牌内容）。
  * 与插件内部走同一套 buildAuthHeaders 逻辑，保证验证的就是线上行为。
  */

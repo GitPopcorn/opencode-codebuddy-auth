@@ -39,8 +39,108 @@ let currentSessionId = "";
  * 初始化成一个空实现，避免模块级初始化顺序问题（noopLog 在文件后段才声明）。
  */
 let hostLog = () => { };
+/**
+ * 模型展示名前缀 —— 与其他自配 provider 的展示风格保持一致。
+ * 只作用于 `name`（给人看的），绝不作用于 `id`（要原样发给上游）。
+ */
+const MODEL_NAME_PREFIX = "[自配][CDBD] ";
+/**
+ * 品牌大小写修正表 —— 键为小写单词，值为规范写法。
+ * 覆盖工作区 `Format-LLM-Name` 现有表格 + 其缺失的品牌项。
+ */
+const MODEL_NAME_BRANDS = {
+    deepseek: "DeepSeek",
+    openai: "OpenAI",
+    openrouter: "OpenRouter",
+    opencode: "OpenCode",
+    claude: "Claude",
+    "claude-code": "ClaudeCode",
+    hermes: "Hermes",
+    qwen: "Qwen",
+    gemma: "Gemma",
+    gemini: "Gemini",
+    llama: "Llama",
+    mistral: "Mistral",
+    codestral: "Codestral",
+    command: "Command",
+    gpt: "GPT",
+    opus: "Opus",
+    sonnet: "Sonnet",
+    haiku: "Haiku",
+    nova: "Nova",
+    micro: "Micro",
+    nano: "Nano",
+    mini: "Mini",
+    flash: "Flash",
+    pro: "Pro",
+    max: "Max",
+    turbo: "Turbo",
+    coder: "Coder",
+    reasoner: "Reasoner",
+    preview: "Preview",
+    latest: "Latest",
+    free: "Free",
+    code: "Code",
+    zen: "Zen",
+    go: "Go",
+    minimax: "MiniMax",
+    glm: "GLM",
+    kimi: "Kimi",
+    mimo: "MiMo",
+    hunyuan: "Hunyuan",
+    step: "Step",
+    space: "Space",
+    bunny: "Bunny",
+    xiaomi: "Xiaomi",
+};
+function capitalizeModelNameWord(word) {
+    if (word.length === 0)
+        return "";
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+}
+/**
+ * 把单个单词（已按分隔符切开）转为展示写法：先查品牌表，查不到就首字母大写其余小写。
+ * 注意：不拆单词内部的 CamelCase（`MiniMax` 视为一个词，`Hy4flash` 也保持一个词）。
+ */
+function normalizeModelNameWord(word) {
+    const branded = MODEL_NAME_BRANDS[word.toLowerCase()];
+    if (branded !== undefined)
+        return branded;
+    return capitalizeModelNameWord(word);
+}
+/**
+ * 把模型名主体格式化为空格分隔的展示写法（不含前缀）。
+ * 空串或全是分隔符时返回空串，由调用方决定兜底。
+ */
+function formatModelNameBody(raw) {
+    const words = raw.split(/[-_\s]+/).filter((w) => w.length > 0);
+    return words.map(normalizeModelNameWord).join(" ");
+}
+/**
+ * 生成注入 `config.provider.codebuddy.models[].name` 的展示名。
+ * - 幂等：已带 `[自配][CDBD] ` 前缀时先剥掉再重新加，绝不复利叠加
+ * - 兜底：名称为空或只有分隔符时，依次回退到 fallbackId 与 `Model`，不抛错
+ * - 只处理展示名，模型 id 由调用方单独保留，绝不经此处改写
+ */
+export function formatModelDisplayName(rawName, fallbackId) {
+    let base = typeof rawName === "string" ? rawName.trim() : "";
+    if (base.startsWith(MODEL_NAME_PREFIX)) {
+        base = base.slice(MODEL_NAME_PREFIX.length).trim();
+    }
+    if (base.length === 0) {
+        base = typeof fallbackId === "string" ? fallbackId.trim() : "";
+    }
+    const body = formatModelNameBody(base) || "Model";
+    return `${MODEL_NAME_PREFIX}${body}`;
+}
+/**
+ * `formatModelDisplayName` 的验证入口 —— 供离线断言脚本直接调用。
+ */
+export function formatModelDisplayNameForTest(rawName, fallbackId) {
+    return formatModelDisplayName(rawName, fallbackId);
+}
 function remoteModelToConfig(m) {
-    const entry = { name: m.name };
+    const entry = { name: formatModelDisplayName(m.name, m.id) };
     if (m.maxInputTokens || m.maxOutputTokens) {
         entry.limit = { context: m.maxInputTokens ?? 0, output: m.maxOutputTokens ?? 0 };
     }
@@ -1477,7 +1577,7 @@ const REASONING_BATCH_CHARS = 400;
 //               （CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名）
 //            8. 识别 HTTP 2xx + JSON 错误体的响应
 //            9. 新增 scripts/verify-fingerprint.mjs 黄金回归测试
-const FORK_VERSION = "4.0.1";
+const FORK_VERSION = "4.1.0";
 const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
 function buildReasoningChunk(reasoningText) {
     const rcObj = {
