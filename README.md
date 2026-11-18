@@ -6,7 +6,7 @@ OpenCode 插件，用于 CodeBuddy (IOA) 认证。通过浏览器 OAuth 登录�
 
 在 `opencode.json` 中添加插件即可，三种配置方式任选其一：
 
-#### 方式一：最简配置（推荐）
+#### 方式一：最简配置 (推荐)
 
 只需添加插件，provider 和 models 由插件自动创建和发现：
 
@@ -18,7 +18,7 @@ OpenCode 插件，用于 CodeBuddy (IOA) 认证。通过浏览器 OAuth 登录�
 
 #### 方式二：声明 provider，自动发现 models
 
-手动声明 provider 配置，但无需写 models（由 `config` hook 自动注入）：
+手动声明 provider 配置，但无需写 models (由 `config` hook 自动注入) ：
 
 ```jsonc
 {
@@ -85,12 +85,12 @@ opencode providers login --provider codebuddy
 # 非交互式列出
 opencode models codebuddy
 
-# 交互式选择（OpenCode 内输入 /model 搜索 codebuddy）
+# 交互式选择 (OpenCode 内输入 /model 搜索 codebuddy)
 ```
 
 IOA 登录后，config hook 会通过 `GET /v3/config` 实时获取 craft agent 可用模型并自动注入。
 
-#### craft agent 支持的模型（来自 /v3/config 接口，可能随时更新）
+#### craft agent 支持的模型 (来自 /v3/config 接口，可能随时更新)
 
 | 模型 ID | 名称 | 上下文 | 图片 | 推理 |
 |---------|------|--------|------|------|
@@ -130,13 +130,13 @@ curl -H 'Accept: application/json, text/plain, */*' \
 
 ## 环境变量
 
-通过 shell `export` 设置，普通用户无需配置（JWT 自动提取）：
+通过 shell `export` 设置，普通用户无需配置 (JWT 自动提取) ：
 
 ```bash
-# 强制使用指定模型（忽略 OpenCode 模型选择）
+# 强制使用指定模型 (忽略 OpenCode 模型选择)
 export CODEBUDDY_DEFAULT_MODEL=deepseek-v3-2-volc
 
-# 覆盖企业/租户信息（不设置则从 JWT 自动提取）
+# 覆盖企业/租户信息 (不设置则从 JWT 自动提取)
 export CODEBUDDY_TENANT_ID=xxx
 export CODEBUDDY_ENTERPRISE_ID=xxx
 export CODEBUDDY_USER_ID=xxx
@@ -146,10 +146,10 @@ opencode
 
 | 变量 | 说明 | 必需 |
 |------|------|------|
-| `CODEBUDDY_DEFAULT_MODEL` | 强制使用指定模型（不设置则使用 OpenCode 选择的模型） | 否 |
-| `CODEBUDDY_TENANT_ID` | 覆盖 tenant_id（不设置则从 JWT 自动提取） | 否 |
-| `CODEBUDDY_ENTERPRISE_ID` | 覆盖 enterprise_id（不设置则从 JWT 自动提取） | 否 |
-| `CODEBUDDY_USER_ID` | 覆盖 user_id（不设置则从 JWT 自动提取） | 否 |
+| `CODEBUDDY_DEFAULT_MODEL` | 强制使用指定模型 (不设置则使用 OpenCode 选择的模型)  | 否 |
+| `CODEBUDDY_TENANT_ID` | 覆盖 tenant_id (不设置则从 JWT 自动提取)  | 否 |
+| `CODEBUDDY_ENTERPRISE_ID` | 覆盖 enterprise_id (不设置则从 JWT 自动提取)  | 否 |
+| `CODEBUDDY_USER_ID` | 覆盖 user_id (不设置则从 JWT 自动提取)  | 否 |
 
 ## 国内版 vs 国际版
 
@@ -168,9 +168,9 @@ opencode
 }
 ```
 
-| 环境 | baseURL | X-Domain（自动检测） |
+| 环境 | baseURL | X-Domain (自动检测)  |
 |------|---------|---------|
-| 国内版（默认） | `https://copilot.tencent.com/v2` | `www.codebuddy.cn` |
+| 国内版 (默认)  | `https://copilot.tencent.com/v2` | `www.codebuddy.cn` |
 | 国际版 | `https://www.codebuddy.ai/v2` | `www.codebuddy.ai` |
 
 > 插件根据 `baseURL` 自动设置 `X-Domain`：检测到 `codebuddy.ai` 时使用 `www.codebuddy.ai`，否则默认 `www.codebuddy.cn`。
@@ -186,7 +186,7 @@ OpenCode CLI
   ├─ loader() → 返回 { apiKey, baseURL, fetch }
   │              fetch 拦截所有 /chat/completions 请求
   └─ 对话流程 → 拦截请求
-                附加认证 headers（Authorization, B3 追踪, X-Model-ID 等）
+                附加认证 headers (Authorization, B3 追踪, X-Model-ID 等)
                 转发到 CodeBuddy /v2/chat/completions
                 直接透传 OpenAI 兼容 SSE 响应
 ```

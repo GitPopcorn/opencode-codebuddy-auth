@@ -17,7 +17,7 @@ const CONFIG = {
   serverUrl: "https://copilot.tencent.com",
   chatCompletionsPath: "/v2/chat/completions",
   platform: "VSCode",
-  // 版本号单一真源：UA 首段（ideName/ideVersion）与 X-IDE-Version / X-Product-Version
+  // 版本号单一真源：UA 首段 (ideName/ideVersion) 与 X-IDE-Version / X-Product-Version
   // 必须同源同值 —— 对齐官方 CodeBuddy IDE 4.12.4 抓包。
   appVersion: "4.12.4",
   ideName: "CodeBuddyIDE",
@@ -111,20 +111,20 @@ let resolvedDomain = CONFIG.domain;
 
 /**
  * 当前会话 ID —— 由 chat.params / experimental.chat.system.transform 两个钩子捕获。
- * 用途：稳定派生会话维度 ID（X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId，
- * 同一会话恒定同一值）。
+ * 用途：稳定派生会话维度 ID (X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId，
+ * 同一会话恒定同一值) 。
  */
 let currentSessionId = "";
 
 /**
  * 宿主日志出口 —— 由插件工厂注入，供各钩子复用同一套日志实现。
- * 初始化成一个空实现，避免模块级初始化顺序问题（noopLog 在文件后段才声明）。
+ * 初始化成一个空实现，避免模块级初始化顺序问题 (noopLog 在文件后段才声明) 。
  */
 let hostLog: LogFn = () => {};
 
 /**
  * 模型展示名前缀 —— 与其他自配 provider 的展示风格保持一致。
- * 只作用于 `name`（给人看的），绝不作用于 `id`（要原样发给上游）。
+ * 只作用于 `name` (给人看的) ，绝不作用于 `id` (要原样发给上游) 。
  */
 const MODEL_NAME_PREFIX = "[自配][CDBD] ";
 
@@ -184,8 +184,8 @@ function capitalizeModelNameWord(word: string): string {
 }
 
 /**
- * 把单个单词（已按分隔符切开）转为展示写法：先查品牌表，查不到就首字母大写其余小写。
- * 注意：不拆单词内部的 CamelCase（`MiniMax` 视为一个词，`Hy4flash` 也保持一个词）。
+ * 把单个单词 (已按分隔符切开) 转为展示写法：先查品牌表，查不到就首字母大写其余小写。
+ * 注意：不拆单词内部的 CamelCase (`MiniMax` 视为一个词，`Hy4flash` 也保持一个词) 。
  */
 function normalizeModelNameWord(word: string): string {
   const branded = MODEL_NAME_BRANDS[word.toLowerCase()];
@@ -194,7 +194,7 @@ function normalizeModelNameWord(word: string): string {
 }
 
 /**
- * 把模型名主体格式化为空格分隔的展示写法（不含前缀）。
+ * 把模型名主体格式化为空格分隔的展示写法 (不含前缀) 。
  * 空串或全是分隔符时返回空串，由调用方决定兜底。
  */
 function formatModelNameBody(raw: string): string {
@@ -286,8 +286,8 @@ function generateUuid(): string {
 
 // UUID v4 生成器
 // 官方客户端的 X-Request-Trace-Id / X-Root-Request-ID 都是标准 UUID v4
-// （带版本位 4 与 variant 位 10），与旧的 16 位十六进制形式不同。
-// 优先用 crypto.randomUUID（Node/Bun 均有），缺失时手工按 v4 规则拼装。
+//  (带版本位 4 与 variant 位 10) ，与旧的 16 位十六进制形式不同。
+// 优先用 crypto.randomUUID (Node/Bun 均有) ，缺失时手工按 v4 规则拼装。
 function generateUuidV4(): string {
   const c = globalThis.crypto as Crypto | undefined;
   try {
@@ -362,14 +362,14 @@ function resolveModel(inputModel?: string): string {
   return inputModel || "";
 }
 
-/** 生成 32 位小写十六进制 ID（16 字节随机）—— 官方客户端的 ID 形态（X-Request-Trace-Id 除外） */
+/** 生成 32 位小写十六进制 ID (16 字节随机) —— 官方客户端的 ID 形态 (X-Request-Trace-Id 除外)  */
 function generateHex32(): string {
   const bytes = new Uint8Array(16);
   globalThis.crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** 生成 16 位小写十六进制 ID（8 字节随机）—— X-B3-SpanId / X-B3-ParentSpanId 的形态 */
+/** 生成 16 位小写十六进制 ID (8 字节随机) —— X-B3-SpanId / X-B3-ParentSpanId 的形态 */
 function generateHex16(): string {
   const bytes = new Uint8Array(8);
   globalThis.crypto.getRandomValues(bytes);
@@ -381,7 +381,7 @@ function generateHex16(): string {
  * 官方抓包：X-Conversation-ID / X-Trace-ID(= X-B3-TraceId) / X-B3-ParentSpanId
  * 在一段对话的多轮请求里完全不变，只有 SpanId / Request-ID 是每请求新的。
  * 做法：sha256(sessionID) 前 16 字节 → conversationId；后 16 字节 → traceId；
- *       摘要再哈希一次取前 8 字节 → parentSpanId（避免与 traceId 字节区间重叠）。
+ *       摘要再哈希一次取前 8 字节 → parentSpanId (避免与 traceId 字节区间重叠) 。
  */
 interface SessionScopedIds {
   conversationId: string;
@@ -423,12 +423,12 @@ function buildAuthHeaders(
   const tenantId = resolveTenantId(accessToken);
   const enterpriseId = resolveEnterpriseId(accessToken);
   const userId = resolveUserId(accessToken);
-  // 会话维度（一段对话内恒定）：X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId
+  // 会话维度 (一段对话内恒定) ：X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId
   const scopedIds = resolveSessionScopedIds(sessionId ?? currentSessionId);
   const conversationId = scopedIds.conversationId;
   const traceId = scopedIds.traceId;
   const parentSpanId = scopedIds.parentSpanId;
-  // 请求维度（每请求新生成）：
+  // 请求维度 (每请求新生成) ：
   // X-Request-ID 与 X-Conversation-Request-ID 必须同值；
   // X-Conversation-Message-ID 必须是另一个独立的 32 位标识。
   const requestId = generateHex32();
@@ -439,7 +439,7 @@ function buildAuthHeaders(
   const spanId = generateHex16();
   // 官方客户端的 X-Request-Trace-Id 是 UUID v4，与 b3 家族无关，单独生成
   const requestTraceId = generateUuidV4();
-  // 客户端埋点：两个 13 位毫秒时间戳（官方抓包中发送时间比准备时间晚约 30ms）
+  // 客户端埋点：两个 13 位毫秒时间戳 (官方抓包中发送时间比准备时间晚约 30ms)
   const httpSendTime = Date.now();
   const promptPrepareStartTime = httpSendTime - 30;
 
@@ -478,14 +478,14 @@ function buildAuthHeaders(
   if (enterpriseId) headers["X-Enterprise-Id"] = enterpriseId;
   if (userId) headers["X-User-Id"] = userId;
   if (modelId) headers["X-Model-ID"] = modelId;
-  // 设备令牌（TuringShield）：为空时直接不发该头，服务端容忍缺失
+  // 设备令牌 (TuringShield) ：为空时直接不发该头，服务端容忍缺失
   if (deviceToken) headers["X-Device-Token"] = deviceToken;
 
   return headers;
 }
 
 /**
- * 供外部脚本验证请求头构造（不打印令牌内容）。
+ * 供外部脚本验证请求头构造 (不打印令牌内容) 。
  * 与插件内部走同一套 buildAuthHeaders 逻辑，保证验证的就是线上行为。
  */
 export function buildAuthHeadersForTest(
@@ -502,26 +502,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ============================================================================
-// 指纹净化规则引擎（统一规则表 + 两个调用点 + 一个总开关）
+// 指纹净化规则引擎 (统一规则表 + 两个调用点 + 一个总开关)
 // ----------------------------------------------------------------------------
 // v4.0.0 之前存在两套重叠的规则表：
 //   · experimental.chat.system.transform 钩子用的 6 条提示词规则；
-//   · fetch 拦截用的 29 条 body 规则（R1 固定短语 20 + R2 品牌 3 + R3~R8 正则 6）。
+//   · fetch 拦截用的 29 条 body 规则 (R1 固定短语 20 + R2 品牌 3 + R3~R8 正则 6) 。
 // 两者内容重叠却已漂移，还用两个环境变量表达同一个开关。
-// v4.0.1 起合并为**一张规则表**（FINGERPRINT_RULES），两个调用点各取子集，
+// v4.0.1 起合并为**一张规则表** (FINGERPRINT_RULES) ，两个调用点各取子集，
 // 开关收敛为 CODEBUDDY_FINGERPRINT_SANITIZE；旧名 CODEBUDDY_PROMPT_SANITIZE
-// 保留为**废弃别名**（两个开关任一为停用值即整体停用）。
+// 保留为**废弃别名** (两个开关任一为停用值即整体停用) 。
 // 规则内容一字未改 —— 本次只做结构收敛，行为等价。
 //
-// 作用目标（targets）：
-//   prompt —— system-transform 钩子（系统提示词）
-//   body   —— 请求体净化（messages 全字段）
+// 作用目标 (targets) ：
+//   prompt —— system-transform 钩子 (系统提示词)
+//   body   —— 请求体净化 (messages 全字段)
 //
-// 上游渠道校验（code 11128）对**大小写不敏感的精确子串**做扫描，
+// 上游渠道校验 (code 11128) 对**大小写不敏感的精确子串**做扫描，
 // 命中即让整条请求被拒：
 //   HTTP 400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}
 //
-// 净化只对本插件自己的 provider（codebuddy）生效，其它 provider 原样透传。
+// 净化只对本插件自己的 provider (codebuddy) 生效，其它 provider 原样透传。
 // ============================================================================
 
 /** 规则作用目标：prompt = system-transform 钩子；body = 请求体净化 */
@@ -531,19 +531,19 @@ type FingerprintTarget = "prompt" | "body";
 export type FingerprintScope = "all" | "system-assistant";
 
 interface FingerprintRule {
-  /** 规则标识（仅用于日志定位与回归测试） */
+  /** 规则标识 (仅用于日志定位与回归测试)  */
   id: string;
-  /** 作用目标（一条规则可同时作用于多个调用点） */
+  /** 作用目标 (一条规则可同时作用于多个调用点)  */
   targets: FingerprintTarget[];
-  /** 匹配方式：literal = 固定短语（转义后按字面匹配）；regex = 正则 */
+  /** 匹配方式：literal = 固定短语 (转义后按字面匹配) ；regex = 正则 */
   mode: "literal" | "regex";
   /** 匹配源：literal 时为短语原文，regex 时为正则源码 */
   source: string;
-  /** 正则标志（仅 regex 模式有效，缺省 "gi"） */
+  /** 正则标志 (仅 regex 模式有效，缺省 "gi")  */
   flags?: string;
   /** 替换文本 */
   replacement: string;
-  /** 替换函数（需要引用捕获组时使用） */
+  /** 替换函数 (需要引用捕获组时使用)  */
   replace?: (...args: string[]) => string;
 }
 
@@ -552,7 +552,7 @@ interface FingerprintRule {
  * prompt 子集与 body 子集各自保持原有相对顺序，行为与 v4.0.0 完全等价。
  */
 const FINGERPRINT_RULES: FingerprintRule[] = [
-  // ===== prompt 子集（system-transform 钩子，原 6 条） =====
+  // ===== prompt 子集 (system-transform 钩子，原 6 条)  =====
   // 1. "You are an AI agent powered by <X> Harness." -> "You are an AI agent."
   {
     id: "prompt-ai-agent-harness",
@@ -608,8 +608,8 @@ const FINGERPRINT_RULES: FingerprintRule[] = [
     replacement: "You are powered by a large language model",
   },
 
-  // ===== body 子集（请求体净化，原 29 条） =====
-  // R1 固定短语表（大小写不敏感；只替换命中的片段，其余逐字节保留）
+  // ===== body 子集 (请求体净化，原 29 条)  =====
+  // R1 固定短语表 (大小写不敏感；只替换命中的片段，其余逐字节保留)
   {
     id: "body-lit-ai-agent-harness",
     targets: ["body"],
@@ -754,7 +754,7 @@ const FINGERPRINT_RULES: FingerprintRule[] = [
     source: "Sisyphus-Junior - Focused executor from OhMyOpenCode",
     replacement: "Focused executor",
   },
-  // R2 品牌名改写（R1 的兜底：处理裸提及）
+  // R2 品牌名改写 (R1 的兜底：处理裸提及)
   {
     id: "body-brand-deepseek-harness",
     targets: ["body"],
@@ -815,7 +815,7 @@ const FINGERPRINT_RULES: FingerprintRule[] = [
     flags: "gi",
     replacement: "",
   },
-  // R7 服务端注入的身份指令（保留结尾非字面字符，避免吃掉相邻文本）
+  // R7 服务端注入的身份指令 (保留结尾非字面字符，避免吃掉相邻文本)
   {
     id: "body-self-identity-instruction",
     targets: ["body"],
@@ -838,20 +838,20 @@ const FINGERPRINT_RULES: FingerprintRule[] = [
   },
 ];
 
-/** prompt 子集（system-transform 钩子） */
+/** prompt 子集 (system-transform 钩子)  */
 const PROMPT_FINGERPRINT_RULES = FINGERPRINT_RULES.filter((rule) =>
   rule.targets.includes("prompt"),
 );
 
-/** body 子集（请求体净化） */
+/** body 子集 (请求体净化)  */
 const BODY_FINGERPRINT_RULES = FINGERPRINT_RULES.filter((rule) =>
   rule.targets.includes("body"),
 );
 
-/** A1 兜底 system 提示词（system 消息内容被清空时使用） */
+/** A1 兜底 system 提示词 (system 消息内容被清空时使用)  */
 const FINGERPRINT_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
 
-/** 正则元字符转义（用于把固定短语安全地编译成正则） */
+/** 正则元字符转义 (用于把固定短语安全地编译成正则)  */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -909,16 +909,16 @@ function applyFingerprintRules(
 }
 
 /**
- * 对单条系统提示词做指纹净化（prompt 子集）。
+ * 对单条系统提示词做指纹净化 (prompt 子集) 。
  * 纯函数：不读环境变量、不打日志 —— 命中短语逐条替换，其余文本逐字节保留。
- * 供钩子与外部验证脚本共用（钩子侧另行判断 provider 与开关）。
+ * 供钩子与外部验证脚本共用 (钩子侧另行判断 provider 与开关) 。
  */
 export function sanitizeSystemPromptForTest(text: string): string {
   return applyFingerprintRules(text, PROMPT_FINGERPRINT_RULES).text;
 }
 
 /**
- * 对单段文本做指纹净化（body 子集）。
+ * 对单段文本做指纹净化 (body 子集) 。
  * 纯函数：不读环境变量、不打日志、不碰网络。
  */
 export function sanitizeFingerprintTextForTest(text: string): {
@@ -936,9 +936,9 @@ function isSwitchOff(raw: string | undefined): boolean {
 }
 
 /**
- * 指纹净化总开关（唯一开关）：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写**。
+ * 指纹净化总开关 (唯一开关) ：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写**。
  * 旧名 CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名 —— 两个开关任一为停用值即整体停用。
- * 注意：本开关**只管文本改写**；A1（首条消息必须是 system）由独立开关控制。
+ * 注意：本开关**只管文本改写**；A1 (首条消息必须是 system) 由独立开关控制。
  */
 export function isFingerprintSanitizeEnabled(): boolean {
   if (isSwitchOff(process.env.CODEBUDDY_FINGERPRINT_SANITIZE)) return false;
@@ -947,7 +947,7 @@ export function isFingerprintSanitizeEnabled(): boolean {
 }
 
 /**
- * A1（首条消息必须是 system）开关：CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off 停用。
+ * A1 (首条消息必须是 system) 开关：CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off 停用。
  * 与净化开关相互独立 —— 协议形态修正与文本改写是两件事。
  */
 export function isSystemFirstEnabled(): boolean {
@@ -956,8 +956,8 @@ export function isSystemFirstEnabled(): boolean {
 
 /**
  * 净化作用范围：CODEBUDDY_FINGERPRINT_SCOPE=all | system-assistant。
- * 默认 system-assistant —— 线上实测（2026-11-18）：上游只扫描 system 与 assistant
- * 消息，user / tool 角色携带同样短语时上游返回 200（P1/P2 实测通过）。
+ * 默认 system-assistant —— 线上实测 (2026-11-18) ：上游只扫描 system 与 assistant
+ * 消息，user / tool 角色携带同样短语时上游返回 200 (P1/P2 实测通过) 。
  */
 export function getFingerprintScope(): FingerprintScope {
   const raw = (process.env.CODEBUDDY_FINGERPRINT_SCOPE || "").trim().toLowerCase();
@@ -968,7 +968,7 @@ export function getFingerprintScope(): FingerprintScope {
 /** 废弃别名的提示只打一次 */
 let deprecatedAliasNotified = false;
 
-/** 首次见到废弃别名时打一条 info（提醒迁移到 CODEBUDDY_FINGERPRINT_SANITIZE） */
+/** 首次见到废弃别名时打一条 info (提醒迁移到 CODEBUDDY_FINGERPRINT_SANITIZE)  */
 function noteDeprecatedAliasOnce(log: LogFn): void {
   if (deprecatedAliasNotified) return;
   if (!(process.env.CODEBUDDY_PROMPT_SANITIZE || "").trim()) return;
@@ -980,33 +980,33 @@ function noteDeprecatedAliasOnce(log: LogFn): void {
 }
 
 // ============================================================================
-// 请求体级指纹净化（规避上游渠道校验 code 11128）
+// 请求体级指纹净化 (规避上游渠道校验 code 11128)
 // ----------------------------------------------------------------------------
-// 根因（已由线上 A/B 抓包证实）：
+// 根因 (已由线上 A/B 抓包证实) ：
 //   上游对请求体做"大小写不敏感的精确子串匹配"，扫描范围覆盖 role:"system"
-//   与 role:"assistant" 的消息（含 reasoning_content）。任何一条历史消息里
+//   与 role:"assistant" 的消息 (含 reasoning_content) 。任何一条历史消息里
 //   残留的第三方 harness 身份短语，都会让**整条请求**被拒：
 //     HTTP 400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}
 //   症状表现为"同一会话第一轮正常、后续轮次随机 400"。
 //
-// 修复策略（在 loader 的 fetch 拦截里对**发出去的请求体**做改写）：
-//   1. A1 —— 保证 messages[0] 是 system 消息（developer 就地改；不是就补一条）。
+// 修复策略 (在 loader 的 fetch 拦截里对**发出去的请求体**做改写) ：
+//   1. A1 —— 保证 messages[0] 是 system 消息 (developer 就地改；不是就补一条) 。
 //      独立开关 CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off —— 与文本净化开关无关。
-//   2. A2 —— 对每条消息的文本做"逐条短语改写"（逐字匹配、大小写不敏感），
+//   2. A2 —— 对每条消息的文本做"逐条短语改写" (逐字匹配、大小写不敏感) ，
 //      只改写命中的那一小片，其余文本逐字节保留。
 //      —— 刻意**不**整体替换系统提示词：用户的 AGENTS.md 指令必须完整存活。
-//      作用范围由 CODEBUDDY_FINGERPRINT_SCOPE 控制（默认 system-assistant：
-//      线上实测上游不扫描 user / tool 角色）。
+//      作用范围由 CODEBUDDY_FINGERPRINT_SCOPE 控制 (默认 system-assistant：
+//      线上实测上游不扫描 user / tool 角色) 。
 //   3. 幂等：净化两次 == 净化一次；无关文本不被改动。
 //   4. 深拷贝：净化在**副本**上进行 —— 宿主传入的请求对象绝不被就地修改。
-//   5. 工具入参：改写后必须是合法 JSON，否则回滚该字段（只记计数）。
+//   5. 工具入参：改写后必须是合法 JSON，否则回滚该字段 (只记计数) 。
 //   6. 空内容：system 内容被清空 -> 换成中性默认提示词；
-//      assistant 内容被清空且无 tool_calls -> 整条丢掉（上游拒绝空消息）。
+//      assistant 内容被清空且无 tool_calls -> 整条丢掉 (上游拒绝空消息) 。
 //
-// 开关：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写**（默认启用）。
+// 开关：CODEBUDDY_FINGERPRINT_SANITIZE=off 停用**文本改写** (默认启用) 。
 // ============================================================================
 
-/** 深拷贝任意 JSON 值（不共享任何引用） */
+/** 深拷贝任意 JSON 值 (不共享任何引用)  */
 function cloneValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => cloneValue(item));
   if (value && typeof value === "object") {
@@ -1022,11 +1022,11 @@ function cloneValue(value: unknown): unknown {
 interface ContentTextState {
   /** none = null/undefined；string = 字符串；text-array = 纯文本分片数组；other = 含非文本分片 */
   kind: "none" | "string" | "text-array" | "other";
-  /** 文本内容（text-array 时为所有文本分片拼接） */
+  /** 文本内容 (text-array 时为所有文本分片拼接)  */
   text: string;
 }
 
-/** 判定消息 content 的形态与文本内容（用于空内容处理） */
+/** 判定消息 content 的形态与文本内容 (用于空内容处理)  */
 function contentTextState(content: unknown): ContentTextState {
   if (typeof content === "string") return { kind: "string", text: content };
   if (Array.isArray(content)) {
@@ -1059,10 +1059,10 @@ function isValidToolArguments(text: string): boolean {
   }
 }
 
-// 注：原先分散在本文件的两份规则表（提示词 6 条 + body 29 条）已于 v4.0.1
-// 合并为统一的 FINGERPRINT_RULES（见上方规则引擎）—— 此处不再保留第二份表。
+// 注：原先分散在本文件的两份规则表 (提示词 6 条 + body 29 条) 已于 v4.0.1
+// 合并为统一的 FINGERPRINT_RULES (见上方规则引擎) —— 此处不再保留第二份表。
 
-/** 单条消息的净化结果（只含计数与形态，绝不含内容） */
+/** 单条消息的净化结果 (只含计数与形态，绝不含内容)  */
 interface MessageSanitizeResult {
   /** 是否发生过改写 */
   rewritten: boolean;
@@ -1083,15 +1083,15 @@ interface MessageSanitizeResult {
 }
 
 /**
- * 对单条消息的所有文本字段做指纹净化（就地修改 —— 调用方保证这是插件自己的副本）。
- * 覆盖：content（字符串 / 数组里的 text 分片）、reasoning_content、reasoning、
+ * 对单条消息的所有文本字段做指纹净化 (就地修改 —— 调用方保证这是插件自己的副本) 。
+ * 覆盖：content (字符串 / 数组里的 text 分片) 、reasoning_content、reasoning、
  *      tool_calls[].function.arguments。
  *
- * 作用范围（scope）：
- *   all              —— 所有 role 的文本都改写（v4.0.0 行为）
+ * 作用范围 (scope) ：
+ *   all              —— 所有 role 的文本都改写 (v4.0.0 行为)
  *   system-assistant —— 只改写 system / assistant 消息的文本；
  *                       tool_calls[].function.arguments 仍然改写
- *                       （那是模型产出的内容，不是用户数据）
+ *                        (那是模型产出的内容，不是用户数据)
  */
 function sanitizeChatMessage(
   message: unknown,
@@ -1195,15 +1195,15 @@ function sanitizeChatMessage(
 
 /** 请求体净化的可调项 */
 export interface FingerprintSanitizeOptions {
-  /** 是否保证首条消息是 system（默认 true；由 CODEBUDDY_FINGERPRINT_SYSTEM_FIRST 控制） */
+  /** 是否保证首条消息是 system (默认 true；由 CODEBUDDY_FINGERPRINT_SYSTEM_FIRST 控制)  */
   systemFirst?: boolean;
-  /** 是否改写文本（默认 true；由 CODEBUDDY_FINGERPRINT_SANITIZE 控制） */
+  /** 是否改写文本 (默认 true；由 CODEBUDDY_FINGERPRINT_SANITIZE 控制)  */
   rewriteText?: boolean;
-  /** 作用范围（默认取环境变量解析结果） */
+  /** 作用范围 (默认取环境变量解析结果)  */
   scope?: FingerprintScope;
 }
 
-/** 请求体净化结果（只含计数，绝不含内容） */
+/** 请求体净化结果 (只含计数，绝不含内容)  */
 export interface FingerprintSanitizeResult {
   body: unknown;
   messagesScanned: number;
@@ -1217,7 +1217,7 @@ export interface FingerprintSanitizeResult {
 }
 
 /**
- * 请求体级指纹净化入口（纯函数，不依赖网络与环境变量）。
+ * 请求体级指纹净化入口 (纯函数，不依赖网络与环境变量) 。
  * 深拷贝 messages 后再改写 —— **绝不修改调用方传入的对象**。
  * 返回改写后的**新** body，调用方必须使用返回值。
  */
@@ -1248,7 +1248,7 @@ export function sanitizePayloadForTest(
   const messages = originalMessages.map((message) => cloneValue(message));
   const nextPayload: Record<string, unknown> = { ...payload, messages };
 
-  // A1 —— 首条消息必须是 system（与文本净化开关相互独立）
+  // A1 —— 首条消息必须是 system (与文本净化开关相互独立)
   if (systemFirst) {
     ensureSystemFirst(messages);
     result.systemFirstApplied = true;
@@ -1299,7 +1299,7 @@ export function sanitizePayloadForTest(
   };
 }
 
-/** A1 —— 保证 messages[0] 是 system 消息（就地修改数组） */
+/** A1 —— 保证 messages[0] 是 system 消息 (就地修改数组)  */
 function ensureSystemFirst(messages: unknown[]): void {
   if (!Array.isArray(messages) || messages.length === 0) {
     messages.unshift({
@@ -1325,7 +1325,7 @@ function ensureSystemFirst(messages: unknown[]): void {
 }
 
 // ============================================================================
-// 上游错误分类（防日志自污染）
+// 上游错误分类 (防日志自污染)
 // ----------------------------------------------------------------------------
 // 根因：上游的错误体里带着 code 11128 与 "Illegal API invocation from an
 // unapproved channel" 这句话。宿主日志会被 agent 读回 —— 那句话重新进入对话，
@@ -1334,10 +1334,10 @@ function ensureSystemFirst(messages: unknown[]): void {
 // 铁律：
 //   1. 上游 msg / 错误体**绝不**原样写进日志、诊断文件或抛出的错误；
 //   2. 只记稳定分类：HTTP 状态 + 固定枚举标签 + 脱敏后的业务码；
-//   3. 自指错误码（11128）映射成符号标签，绝不按裸数字写出去。
+//   3. 自指错误码 (11128) 映射成符号标签，绝不按裸数字写出去。
 // ============================================================================
 
-/** 上游错误分类标签（固定枚举） */
+/** 上游错误分类标签 (固定枚举)  */
 export type UpstreamErrorLabel = "channel-reject" | "auth" | "rate-limit" | "other";
 
 /**
@@ -1348,7 +1348,7 @@ const UPSTREAM_SELF_REFERENTIAL_CODES: Record<string, string> = {
   "11128": "CHANNEL_REJECT",
 };
 
-/** 自指文本片段（脱敏用） */
+/** 自指文本片段 (脱敏用)  */
 const UPSTREAM_SELF_REFERENTIAL_PATTERNS: Array<{
   source: string;
   flags: string;
@@ -1381,7 +1381,7 @@ export function redactSelfReferentialText(text: string): string {
   return out;
 }
 
-/** 从上游错误体里取业务码（字符串或对象形态） */
+/** 从上游错误体里取业务码 (字符串或对象形态)  */
 function extractUpstreamCode(body: unknown): string | null {
   if (typeof body === "string") {
     try {
@@ -1406,7 +1406,7 @@ function upstreamLabelFromStatus(status: number): UpstreamErrorLabel {
 
 /**
  * 上游错误分类 —— 只产出稳定标签与脱敏码，绝不回显上游原文。
- * 返回的 codeLabel 对自指错误码是符号标签（CHANNEL_REJECT），不是裸数字。
+ * 返回的 codeLabel 对自指错误码是符号标签 (CHANNEL_REJECT) ，不是裸数字。
  */
 export function classifyUpstreamError(
   status: number,
@@ -1425,7 +1425,7 @@ export function classifyUpstreamError(
  * 识别"HTTP 2xx 但 body 是 JSON 错误"的响应。
  * 上游偶尔用 200 返回 JSON 错误体 —— 这类响应逃过了 !response.ok 分支，
  * 此前从不被分类。这里只做分类与日志 —— body 仍原样转发给宿主
- * （转发行为不在本次修复范围内）。
+ *  (转发行为不在本次修复范围内) 。
  */
 async function detectUpstreamJsonError(response: Response, log: LogFn): Promise<void> {
   let text = "";
@@ -1451,11 +1451,11 @@ async function detectUpstreamJsonError(response: Response, log: LogFn): Promise<
 }
 
 // ============================================================================
-// 设备令牌 Provider（TuringShield N-API 原生插件）
+// 设备令牌 Provider (TuringShield N-API 原生插件)
 // ----------------------------------------------------------------------------
 // 官方客户端对个人版账号会带上 X-Device-Token，该值由腾讯 TuringShield 原生
-// 插件（N-API addon）生成。官方 VS Code 扩展并不内嵌该 SDK（缺失时它发
-// X-Device-Token-Error: sdk_not_initialized），说明服务端容忍该头缺失 ——
+// 插件 (N-API addon) 生成。官方 VS Code 扩展并不内嵌该 SDK (缺失时它发
+// X-Device-Token-Error: sdk_not_initialized) ，说明服务端容忍该头缺失 ——
 // 因此本实现全程 fail-open：任何一步失败都只是"不带这个头"，绝不影响聊天请求。
 //
 // 关键约束：
@@ -1465,15 +1465,15 @@ async function detectUpstreamJsonError(response: Response, log: LogFn): Promise<
 //   4. 禁止全盘遍历：候选根目录有界、候选路径数量有界、搜索深度有界
 // ============================================================================
 
-/** 国内版（copilot.tencent.com / .cn）渠道号 */
+/** 国内版 (copilot.tencent.com / .cn) 渠道号 */
 const TURING_CHANNEL_CN = 109137;
-/** 国际版（.ai）渠道号 */
+/** 国际版 (.ai) 渠道号 */
 const TURING_CHANNEL_INTL = 400101;
 /** token 本地缓存有效期 */
 const TURING_TOKEN_TTL_MS = 60000;
-/** 原生插件加载 + 取 token 的总超时（fail-open 上限） */
+/** 原生插件加载 + 取 token 的总超时 (fail-open 上限)  */
 const TURING_FETCH_TIMEOUT_MS = 5000;
-/** 候选路径数量上限（禁止全盘遍历） */
+/** 候选路径数量上限 (禁止全盘遍历)  */
 const TURING_MAX_CANDIDATES = 40;
 /** 原生插件在客户端安装目录下的相对路径 */
 const TURING_ADDON_RELATIVE = [
@@ -1486,7 +1486,7 @@ const TURING_ADDON_RELATIVE = [
 ];
 /** 原生插件文件名 */
 const TURING_ADDON_FILE = "electron.napi.node";
-/** 客户端安装目录名匹配规则（大小写不敏感） */
+/** 客户端安装目录名匹配规则 (大小写不敏感)  */
 const TURING_CLIENT_DIR_PATTERN = /^(codebuddy[ _-]*cn|workbuddy)(\.app)?$/i;
 
 interface TuringRiskResult {
@@ -1543,7 +1543,7 @@ function resolveTuringChannelId(): number {
 /**
  * 取得可用的 require 函数。
  * 产物是 CJS 时模块作用域自带 require；产物是 ESM 时 require 不存在，
- * 用 module.createRequire 兜底（Node / Bun 均提供）。
+ * 用 module.createRequire 兜底 (Node / Bun 均提供) 。
  */
 let cachedRequireFn: ((id: string) => unknown) | null = null;
 function getRequireFn(): ((id: string) => unknown) | null {
@@ -1559,7 +1559,7 @@ function getRequireFn(): ((id: string) => unknown) | null {
     /* ESM 产物中 require 未定义，走下面的兜底 */
   }
   try {
-    // ESM 产物：createRequire 兜底（绝对路径加载不受 base 影响）
+    // ESM 产物：createRequire 兜底 (绝对路径加载不受 base 影响)
     const req = createRequire(path.join(process.cwd(), "codebuddy-auth-loader.cjs"));
     cachedRequireFn = (id: string) => req(id);
     return cachedRequireFn;
@@ -1568,7 +1568,7 @@ function getRequireFn(): ((id: string) => unknown) | null {
   }
 }
 
-/** 候选根目录（有界：固定几个环境变量目录 + 各固定盘根下的 Programs） */
+/** 候选根目录 (有界：固定几个环境变量目录 + 各固定盘根下的 Programs)  */
 function collectTuringRootDirs(): string[] {
   const roots: string[] = [];
   const push = (candidate?: string | null): void => {
@@ -1586,7 +1586,7 @@ function collectTuringRootDirs(): string[] {
   push(process.env.ProgramW6432);
   push(process.env.APPDATA);
   push("D:\\Programs");
-  // 固定盘根目录下的 Programs 文件夹 —— 逐盘探测（最多 26 个盘符），
+  // 固定盘根目录下的 Programs 文件夹 —— 逐盘探测 (最多 26 个盘符) ，
   // 只做存在性判断，不做任何递归遍历
   for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
     const driveRoot = `${letter}:\\`;
@@ -1606,7 +1606,7 @@ function collectTuringRootDirs(): string[] {
   return roots;
 }
 
-/** 在根目录下找客户端安装目录（仅一层，深度 ≤ 3 内） */
+/** 在根目录下找客户端安装目录 (仅一层，深度 ≤ 3 内)  */
 function listTuringClientDirs(root: string): string[] {
   const found: string[] = [];
   let entries: fs.Dirent[];
@@ -1627,7 +1627,7 @@ function listTuringClientDirs(root: string): string[] {
   return found;
 }
 
-/** 在预编译目录里取原生插件文件（优先 electron.napi.node，缺失时取任意 *.napi.node） */
+/** 在预编译目录里取原生插件文件 (优先 electron.napi.node，缺失时取任意 *.napi.node)  */
 function resolveAddonFileInDir(dir: string): string {
   const preferred = path.join(dir, TURING_ADDON_FILE);
   try {
@@ -1645,7 +1645,7 @@ function resolveAddonFileInDir(dir: string): string {
   return "";
 }
 
-/** 组装候选原生插件路径（数量有界，最多 TURING_MAX_CANDIDATES 条） */
+/** 组装候选原生插件路径 (数量有界，最多 TURING_MAX_CANDIDATES 条)  */
 function collectTuringCandidatePaths(platformArch: string): string[] {
   const candidates: string[] = [];
   for (const root of collectTuringRootDirs()) {
@@ -1702,7 +1702,7 @@ function findTuringAddonPath(): string {
   return "";
 }
 
-/** 加载原生插件（任何异常都吞掉，返回 null 表示不可用） */
+/** 加载原生插件 (任何异常都吞掉，返回 null 表示不可用)  */
 function loadTuringAddon(addonPath: string): TuringAddon | null {
   const req = getRequireFn();
   if (!req) return null;
@@ -1719,7 +1719,7 @@ function loadTuringAddon(addonPath: string): TuringAddon | null {
   }
 }
 
-/** 向原生插件取设备令牌（token 非空才算成功） */
+/** 向原生插件取设备令牌 (token 非空才算成功)  */
 async function fetchTuringDeviceToken(addon: TuringAddon): Promise<string> {
   const channelId = resolveTuringChannelId();
   if (!turingRuntime.initialized || turingRuntime.channelId !== channelId) {
@@ -1737,7 +1737,7 @@ async function fetchTuringDeviceToken(addon: TuringAddon): Promise<string> {
   return "";
 }
 
-/** 给 Promise 加超时兜底（超时即返回 fallback，绝不 reject） */
+/** 给 Promise 加超时兜底 (超时即返回 fallback，绝不 reject)  */
 function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise<T>((resolve) => {
     let settled = false;
@@ -1763,15 +1763,15 @@ function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
   });
 }
 
-/** 真正去拿一次令牌（含发现 + 加载 + 初始化），任何失败都返回空串 */
+/** 真正去拿一次令牌 (含发现 + 加载 + 初始化) ，任何失败都返回空串 */
 async function loadTuringDeviceToken(log: LogFn): Promise<string> {
   try {
-    // 显式关闭开关：整个特性停用（优先级最高 —— "feature off entirely"）
+    // 显式关闭开关：整个特性停用 (优先级最高 —— "feature off entirely")
     if ((process.env.CODEBUDDY_TURING_NATIVE_DISABLED || "").trim() === "1") {
       return "";
     }
     if (!turingRuntime.discovered) {
-      // 只探测一次，结果（成功/失败）都缓存，避免每请求重扫磁盘
+      // 只探测一次，结果 (成功/失败) 都缓存，避免每请求重扫磁盘
       turingRuntime.discovered = true;
       const addonPath = findTuringAddonPath();
       if (!addonPath) {
@@ -1813,13 +1813,13 @@ async function loadTuringDeviceToken(log: LogFn): Promise<string> {
 }
 
 /**
- * 设备令牌开关：CODEBUDDY_DEVICE_TOKEN=on 才启用（默认关闭）。
+ * 设备令牌开关：CODEBUDDY_DEVICE_TOKEN=on 才启用 (默认关闭) 。
  *
  * 为什么默认关闭：
  *   官方客户端在拿不到 TuringShield 令牌时是"降级为不发该头"，而不是"自己造一个"。
  *   社区共识同样是"官方来源优先，否则不发"——伪造/自造令牌反而更像非官方渠道，
  *   反而增加被上游判为未批准渠道的风险。因此默认不发 X-Device-Token，
- *   只有显式打开环境变量时才启用（provider 实现本身保持完整可用）。
+ *   只有显式打开环境变量时才启用 (provider 实现本身保持完整可用) 。
  */
 function isDeviceTokenEnabled(): boolean {
   const raw = (process.env.CODEBUDDY_DEVICE_TOKEN || "").trim().toLowerCase();
@@ -1827,9 +1827,9 @@ function isDeviceTokenEnabled(): boolean {
 }
 
 /**
- * 取当前设备令牌（带 60s 缓存）。
- * fail-open：任何异常都不会抛出，只会返回空串（= 不带该头）。
- * 默认关闭（CODEBUDDY_DEVICE_TOKEN=on 才启用）。
+ * 取当前设备令牌 (带 60s 缓存) 。
+ * fail-open：任何异常都不会抛出，只会返回空串 (= 不带该头) 。
+ * 默认关闭 (CODEBUDDY_DEVICE_TOKEN=on 才启用) 。
  */
 async function getDeviceToken(log: LogFn = noopLog): Promise<string> {
   // 默认不带 X-Device-Token —— 官方客户端拿不到令牌时也是直接不发该头
@@ -1849,7 +1849,7 @@ async function getDeviceToken(log: LogFn = noopLog): Promise<string> {
   return work;
 }
 
-/** 供外部脚本探测设备令牌可用性（只返回令牌本身，不打印内容） */
+/** 供外部脚本探测设备令牌可用性 (只返回令牌本身，不打印内容)  */
 export async function getDeviceTokenForTest(): Promise<string | null> {
   const token = await getDeviceToken((level, message) => {
     try {
@@ -1866,7 +1866,7 @@ export async function getDeviceTokenForTest(): Promise<string | null> {
 // OpenCode 上游看到每个 reasoning_content delta 都会触发新的 ReasoningPart，
 // 即使 finish_reason 修了也没用——必须让 OpenCode 只看到一个完整的 reasoning 块。
 // ============================================================================
-// SSE 处理核心（v3 - 无死锁设计）
+// SSE 处理核心 (v3 - 无死锁设计)
 // ----------------------------------------------------------------------------
 // 重要教训：ReadableStream 的 pull() 只在「消费者请求数据且内部队列空」时被调用。
 // 任何「把数据攒起来、等时间到了再 enqueue」的缓冲逻辑都会死锁——因为攒起来但
@@ -1875,8 +1875,8 @@ export async function getDeviceTokenForTest(): Promise<string | null> {
 //   1. 每次 pull() 读到的数据，在本次调用内全部处理完并 enqueue，绝不留给下次
 //   2. reasoning 合并只按「字符数阈值」分批，不按时间——数据流动就一定会触发 flush
 //   3. content / tool_calls / finish 出现时，先把残余 reasoning flush 成独立 chunk
-//      （OpenCode 上游 Lifecycle id="reasoning-0" 会把所有 reasoning delta 拼接
-//        成一段完整思考，不会切碎）
+//       (OpenCode 上游 Lifecycle id="reasoning-0" 会把所有 reasoning delta 拼接
+//        成一段完整思考，不会切碎)
 // ============================================================================
 
 type MergeState = {
@@ -1886,55 +1886,55 @@ type MergeState = {
   reasoningFlushed: boolean;
   totalRawBytes: number;
   streamStartMs: number;
-  // 日志收敛标记：heartbeat flush 只在首次打 info，后续静默（原每 2s 一条会刷屏）
+  // 日志收敛标记：heartbeat flush 只在首次打 info，后续静默 (原每 2s 一条会刷屏)
   heartbeatLogged: boolean;
 };
 
 // reasoning 分批阈值：每累积约 400 字符就 flush 一个 reasoning delta chunk。
-// 太大 → 下游长时间无数据（可能被误判超时）；太小 → flush 太碎。
+// 太大 → 下游长时间无数据 (可能被误判超时) ；太小 → flush 太碎。
 // 400 字符约等于正常模型 1-3 秒的思考输出，平衡流式感与开销。
 const REASONING_BATCH_CHARS = 400;
 
 // 版本标识 — 每次 tsc build 时计算新的时间戳
 // ============================================================================
-// 版本标识（固定常量，不再用运行时 Date —— 之前运行时生成导致无法区分
-// "磁盘产物是不是最新编译"，每次启动都不同，日志误导判断）
+// 版本标识 (固定常量，不再用运行时 Date —— 之前运行时生成导致无法区分
+// "磁盘产物是不是最新编译"，每次启动都不同，日志误导判断)
 // 铁律：每次修改代码逻辑后，必须手动 bump 下面这个版本号！
 //   v3.1 = 首次固定版本号机制
-//   v3.2 = 修复 SSE 事件分隔符 bug（\n → \n\n，之前导致两个 JSON 拼接解析失败）
-//   v3.2.1 = 空行跳过（原始 SSE 空行分隔由每行自带 \n\n 承担，避免双空行 + ratio 虚高）
-//   v3.6.0 = 对齐官方客户端指纹头（X-Agent-Type / X-Root-Request-ID / UUID v4 Trace）
+//   v3.2 = 修复 SSE 事件分隔符 bug (\n → \n\n，之前导致两个 JSON 拼接解析失败)
+//   v3.2.1 = 空行跳过 (原始 SSE 空行分隔由每行自带 \n\n 承担，避免双空行 + ratio 虚高)
+//   v3.6.0 = 对齐官方客户端指纹头 (X-Agent-Type / X-Root-Request-ID / UUID v4 Trace)
 //   v3.7.0 = 接入 TuringShield 原生插件，接入 X-Device-Token 设备令牌
-//   v3.8.0 = 对齐官方请求头（X-Trace-ID / UUID v4 Request-ID / 会话稳定 X-Conversation-ID）
-//            + 系统提示词指纹净化（规避上游渠道校验 code 11128）
-//   v3.9.0 = 凭据自愈（启动主动刷新 + 离线会话被吊销时自动引导登录 + 会话级错误自愈）
-//            + 账号侧车（codebuddy-account.json）+ codebuddy-login / codebuddy-doctor 命令
-//   v4.0.0 = 请求体级指纹净化（A1 首条 system 消息 + A2 逐条短语改写 R1~R8，
-//            规避上游渠道校验 code 11128）+ 请求头对齐官方 CodeBuddy IDE 4.12.0
-//            （X-CodeBuddy-Request / X-Product-Code / X-Agent-Purpose 等，
-//            去掉 X-B3-ParentSpanId，message-id 与 request-id 同值）
-//            + 设备令牌改为 opt-in（CODEBUDDY_DEVICE_TOKEN=on）
-//   v4.0.1 = 指纹净化九项正确性修复（**行为修复**，非新功能）：
-//            1. A1（首条 system 消息）从净化开关里拆出 —— 独立开关
+//   v3.8.0 = 对齐官方请求头 (X-Trace-ID / UUID v4 Request-ID / 会话稳定 X-Conversation-ID)
+//            + 系统提示词指纹净化 (规避上游渠道校验 code 11128)
+//   v3.9.0 = 凭据自愈 (启动主动刷新 + 离线会话被吊销时自动引导登录 + 会话级错误自愈)
+//            + 账号侧车 (codebuddy-account.json) + codebuddy-login / codebuddy-doctor 命令
+//   v4.0.0 = 请求体级指纹净化 (A1 首条 system 消息 + A2 逐条短语改写 R1~R8，
+//            规避上游渠道校验 code 11128) + 请求头对齐官方 CodeBuddy IDE 4.12.0
+//             (X-CodeBuddy-Request / X-Product-Code / X-Agent-Purpose 等，
+//            去掉 X-B3-ParentSpanId，message-id 与 request-id 同值)
+//            + 设备令牌改为 opt-in (CODEBUDDY_DEVICE_TOKEN=on)
+//   v4.0.1 = 指纹净化九项正确性修复 (**行为修复**，非新功能) ：
+//            1. A1 (首条 system 消息) 从净化开关里拆出 —— 独立开关
 //               CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off
 //            2. 请求体深拷贝 —— 不再就地改写宿主传入的对象
-//            3. 作用范围可配 CODEBUDDY_FINGERPRINT_SCOPE（默认 system-assistant，
-//               依据线上实测：上游不扫描 user / tool 角色）
+//            3. 作用范围可配 CODEBUDDY_FINGERPRINT_SCOPE (默认 system-assistant，
+//               依据线上实测：上游不扫描 user / tool 角色)
 //            4. tool_calls[].function.arguments 改写后校验 JSON，非法则回滚
 //            5. 空内容处理：system 换中性默认提示词、assistant 无工具调用则丢弃
 //            6. 日志防自污染：上游 msg / 裸错误码绝不进日志，只记稳定分类
-//            7. 两张规则表合并为一张（prompt + body 共用），开关收敛为一个
-//               （CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名）
+//            7. 两张规则表合并为一张 (prompt + body 共用) ，开关收敛为一个
+//                (CODEBUDDY_PROMPT_SANITIZE 保留为废弃别名)
 //            8. 识别 HTTP 2xx + JSON 错误体的响应
 //            9. 新增 scripts/verify-fingerprint.mjs 黄金回归测试
 //   v4.2.0 = 按官方 CodeBuddy IDE 4.12.4 抓包对齐请求头：
 //            1. 补客户端埋点头 monitor_promptpreparestarttime / monitor_httpsendtime
-//               （两个 13 位毫秒时间戳，修复用量页"请求 / 提示词"列恒空）
+//                (两个 13 位毫秒时间戳，修复用量页"请求 / 提示词"列恒空)
 //            2. X-IDE-Version / X-Product-Version / UA 升到 4.12.4
-//            3. 恢复 X-B3-ParentSpanId（16 hex，会话内恒定）
+//            3. 恢复 X-B3-ParentSpanId (16 hex，会话内恒定)
 //            4. 删除官方从不发送的 X-CodeBuddy-Request / X-Product-Code /
 //               X-Private-Data / X-Agent-Purpose / X-Root-Request-ID / Origin / Referer
-//            5. ID 形态改为 32 位小写 hex（X-Request-Trace-Id 仍为 UUID v4），
+//            5. ID 形态改为 32 位小写 hex (X-Request-Trace-Id 仍为 UUID v4) ，
 //               X-Conversation-Message-ID 不再与 X-Request-ID 同值，
 //               会话维度 ID 由 sha256(sessionID) 稳定派生
 const FORK_VERSION = "4.2.0";
@@ -1957,10 +1957,10 @@ function buildReasoningChunk(reasoningText: string): string {
   return "data: " + JSON.stringify(rcObj);
 }
 
-// 处理单个 SSE data: 行。返回要 enqueue 的 SSE 行数组（可空）。
+// 处理单个 SSE data: 行。返回要 enqueue 的 SSE 行数组 (可空) 。
 // 副作用：可能向 state.reasoningBuffer 累积 reasoning_content。
 function processSseDataLine(line: string, state: MergeState): string[] {
-  // 只处理 data: {...} 行；其他 SSE 行（event:/id:/retry:/空行/注释）原样返回
+  // 只处理 data: {...} 行；其他 SSE 行 (event:/id:/retry:/空行/注释) 原样返回
   if (!line.startsWith("data:")) return [line];
   const payload = line.slice(5).replace(/^\s/, ""); // 去前导空格
   if (payload === "" || payload === "[DONE]") return [line];
@@ -1975,7 +1975,7 @@ function processSseDataLine(line: string, state: MergeState): string[] {
   state.totalChunksIn++;
 
   // 字段规范化
-  // 1. finish_reason: "" -> null （CodeBuddy 网关非标准行为，OpenCode 会把 "" 误判为终止）
+  // 1. finish_reason: "" -> null  (CodeBuddy 网关非标准行为，OpenCode 会把 "" 误判为终止)
   // 2. 剥离 null/empty 非标准字段
   const choices = Array.isArray(obj.choices) ? (obj.choices as Array<Record<string, unknown>>) : [];
   for (const choice of choices) {
@@ -2009,7 +2009,7 @@ function processSseDataLine(line: string, state: MergeState): string[] {
   const out: string[] = [];
 
   // 2. 触发点：content / tool_calls / stop / length 出现
-  //    → 先 flush 残余 reasoning（独立 chunk），再发当前 chunk
+  //    → 先 flush 残余 reasoning (独立 chunk) ，再发当前 chunk
   if (hasContent || hasToolCalls || isTerminal) {
     if (state.reasoningBuffer.length > 0) {
       out.push(buildReasoningChunk(state.reasoningBuffer));
@@ -2022,7 +2022,7 @@ function processSseDataLine(line: string, state: MergeState): string[] {
 
   // 3. 纯 reasoning-only / role-only delta：
   //    - 若累积已达阈值 → flush 成 reasoning delta chunk
-  //    - 否则不返回（等累积）
+  //    - 否则不返回 (等累积)
   if (state.reasoningBuffer.length >= REASONING_BATCH_CHARS) {
     out.push(buildReasoningChunk(state.reasoningBuffer));
     state.reasoningBuffer = "";
@@ -2034,7 +2034,7 @@ function processSseDataLine(line: string, state: MergeState): string[] {
 // reasoning 定时心跳 flush 参数
 // 目的：防止"长时间零输出"被误判为卡死。thinking 很慢时，即使累积不到
 // REASONING_BATCH_CHARS(400)，也每 HEARTBEAT 毫秒强制 flush 一次当前累积，
-// 让 TUI 每 ~2 秒能看到思考在推进（几词一刷）。纯兜底，不影响正常分批逻辑。
+// 让 TUI 每 ~2 秒能看到思考在推进 (几词一刷) 。纯兜底，不影响正常分批逻辑。
 const REASONING_HEARTBEAT_MS = 2000;
 
 // 对流式响应做 SSE 规范化 + reasoning 分批合并
@@ -2045,15 +2045,15 @@ async function normalizeCodeBuddySSE(
   response: Response,
   log: LogFn = noopLog,
 ): Promise<Response> {
-  // 非 SSE 响应（如非流式 chat completion）直接透传
-  // NOTE: 保持 info 级别 —— 请求级事件频率低（每请求1条），且是判断
+  // 非 SSE 响应 (如非流式 chat completion) 直接透传
+  // NOTE: 保持 info 级别 —— 请求级事件频率低 (每请求1条) ，且是判断
   // "fork 是否生效 / 响应是否 SSE" 的核心排障信号。debug 在默认运行时
   // 不可见，降级会导致日常排查丢失此信号。
   const ct = response.headers.get("content-type") || "";
   if (!ct.includes("text/event-stream")) {
     // 2xx + JSON 错误体：上游偶尔用 HTTP 200 返回 JSON 错误 —— 这类响应
     // 逃过了 !response.ok 分支，此前从不被分类。这里补上分类与日志
-    //（body 仍原样转发给宿主 —— 转发行为不在本次修复范围内）。
+    // (body 仍原样转发给宿主 —— 转发行为不在本次修复范围内) 。
     await detectUpstreamJsonError(response, log);
     log("info", `[${VERSION_TAG}] non-SSE response, content-type: ${ct}`);
     return response;
@@ -2076,7 +2076,7 @@ async function normalizeCodeBuddySSE(
   };
 
   // ==========================================================================
-  // 心跳机制（setTimeout 链式续期，非 setInterval）
+  // 心跳机制 (setTimeout 链式续期，非 setInterval)
   // 防 setInterval 永不销毁的泄漏：每轮回调先检查 alive 标志，
   // 只有 stream 仍活跃才续期。即使某个清理路径漏执行，一旦 alive=false
   // 就不再调度下一轮 —— 结构性杜绝"定时器永活"。
@@ -2092,7 +2092,7 @@ async function normalizeCodeBuddySSE(
     }
   };
 
-  // 每 HEARTBEAT ms 强制 flush 累积的 reasoning（即使 pull 未被调用也能 enqueue）
+  // 每 HEARTBEAT ms 强制 flush 累积的 reasoning (即使 pull 未被调用也能 enqueue)
   // 这是防"无限卡死"的关键兜底：reasoning-only 期间迟迟不达 400 字符阈值时，
   // 保证每 ~2s 至少输出一次 thinking，TUI 能看到推进，不会误判死锁。
   const scheduleHeartbeat = () => {
@@ -2107,7 +2107,7 @@ async function normalizeCodeBuddySSE(
           state.reasoningBuffer = "";
           // 日志收敛：heartbeat flush 每 ~2s 一次，若每次都打 info 会在长对话中刷几十上百条
           // 干扰其他排查。只在首次 flush 时打一条 info 说明心跳在工作，后续静默。
-          // 若要诊断 heartbeat 是否规律触发，可临时取消注释下一行（逐条日志）。
+          // 若要诊断 heartbeat 是否规律触发，可临时取消注释下一行 (逐条日志) 。
           // log("info", `[${VERSION_TAG}] heartbeat flush ${line.length}B reasoning`);
           if (!state.heartbeatLogged) {
             state.heartbeatLogged = true;
@@ -2150,7 +2150,7 @@ async function normalizeCodeBuddySSE(
         buffer += decoder.decode(value, { stream: true });
         // 处理所有完整行
         // WARN: 绝对不能跳过空行！空行透传成 "\n\n" enqueue 是 ReadableStream 的"心跳"——
-        // reasoning-only 期间 processSseDataLine 返回空数组（不到阈值不输出），
+        // reasoning-only 期间 processSseDataLine 返回空数组 (不到阈值不输出) ，
         // 若此时也没有空行 enqueue，队列空 → 消费者 read() pending → pull 不再被调用 → 死锁。
         // 空行让消费者持续收到数据、pull 持续被调用。ratio=2.0 只是计数失真，不影响功能。
         let nl: number;
@@ -2212,7 +2212,7 @@ async function requestAuthState(): Promise<{ state: string; url: string }> {
   );
   if (!response.ok) {
     const text = await response.text();
-    // 抛出的错误里也不能带上游原文（自指片段会被 agent 读回）
+    // 抛出的错误里也不能带上游原文 (自指片段会被 agent 读回)
     throw new Error(
       `Auth state request failed: ${response.status} - ${redactSelfReferentialText(text)}`,
     );
@@ -2297,21 +2297,21 @@ async function refreshAccessToken(
 }
 
 // ============================================================================
-// 凭据自愈（access token 过期 / 离线会话被吊销 / 账号切换）
+// 凭据自愈 (access token 过期 / 离线会话被吊销 / 账号切换)
 // ----------------------------------------------------------------------------
 // 目标：不依赖人类或模型驱动，插件自己把"坏掉的鉴权"修好，并把结果讲清楚。
 // 三条自愈路径：
-//   1. 启动自愈（config 钩子）：token 临近过期 -> 主动刷新；刷新失败 -> 引导登录。
-//   2. 会话级自愈（event 钩子）：session.error 判定为鉴权失败 -> 刷新或引导登录。
-//   3. 用户命令（codebuddy-login / codebuddy-doctor）：随时手动触发。
+//   1. 启动自愈 (config 钩子) ：token 临近过期 -> 主动刷新；刷新失败 -> 引导登录。
+//   2. 会话级自愈 (event 钩子) ：session.error 判定为鉴权失败 -> 刷新或引导登录。
+//   3. 用户命令 (codebuddy-login / codebuddy-doctor) ：随时手动触发。
 // 铁律：
 //   1. 绝不打印 access / refresh / device token
-//   2. 侧车文件（账号信息）读写全部 try/catch，失败不影响主流程
-//   3. 绝不自动重放失败的用户消息（可能造成重复副作用）
+//   2. 侧车文件 (账号信息) 读写全部 try/catch，失败不影响主流程
+//   3. 绝不自动重放失败的用户消息 (可能造成重复副作用)
 //   4. 绝不无谓打开浏览器 —— 只有真的需要重新登录时才开
 // ============================================================================
 
-/** 账号侧车文件名（与 auth.json 同目录） */
+/** 账号侧车文件名 (与 auth.json 同目录)  */
 const ACCOUNT_SIDECAR_FILE = "codebuddy-account.json";
 
 /** 启动时判定 access token 需要主动刷新的时间窗口 */
@@ -2323,13 +2323,13 @@ const GUIDED_LOGIN_POLL_INTERVAL_MS = 2000;
 /** 引导登录的最长等待时间 */
 const GUIDED_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** 同一类自愈动作的冷却时间（防止 toast 刷屏） */
+/** 同一类自愈动作的冷却时间 (防止 toast 刷屏)  */
 const SELF_HEAL_COOLDOWN_MS = 5 * 60 * 1000;
 
-/** 同一条命令的去重窗口（命令钩子 + 事件兜底双路触发时只执行一次） */
+/** 同一条命令的去重窗口 (命令钩子 + 事件兜底双路触发时只执行一次)  */
 const COMMAND_DEDUPE_MS = 60 * 1000;
 
-/** TUI 提示条请求的超时时间（无 TUI 订阅者时服务端会挂住该请求） */
+/** TUI 提示条请求的超时时间 (无 TUI 订阅者时服务端会挂住该请求)  */
 const TOAST_TIMEOUT_MS = 2000;
 
 /** 令牌轮询：仍在登录中的业务码 */
@@ -2404,7 +2404,7 @@ let guidedLoginPromise: Promise<boolean> | null = null;
 /** 自愈动作冷却表：key -> 上次触发时刻 */
 const selfHealCooldown = new Map<string, number>();
 
-/** 已由命令钩子处理过的命令（供 command.executed 事件兜底去重） */
+/** 已由命令钩子处理过的命令 (供 command.executed 事件兜底去重)  */
 let lastHandledCommand: { cmd: string; at: number } | null = null;
 
 function getOpencodeDataDir(): string {
@@ -2419,7 +2419,7 @@ function getSidecarFilePath(): string {
 	return path.join(getOpencodeDataDir(), ACCOUNT_SIDECAR_FILE);
 }
 
-/** 读取磁盘上的 CodeBuddy 凭据（宿主无 client.auth.get，只能读文件） */
+/** 读取磁盘上的 CodeBuddy 凭据 (宿主无 client.auth.get，只能读文件)  */
 function readStoredAuth(): StoredAuthEntry | null {
 	try {
 		const raw = fs.readFileSync(getAuthFilePath(), "utf8");
@@ -2432,7 +2432,7 @@ function readStoredAuth(): StoredAuthEntry | null {
 	}
 }
 
-/** 读取账号侧车（失败一律返回 null，绝不抛） */
+/** 读取账号侧车 (失败一律返回 null，绝不抛)  */
 function readSidecar(): AccountSidecar | null {
 	try {
 		const raw = fs.readFileSync(getSidecarFilePath(), "utf8");
@@ -2451,7 +2451,7 @@ function readSidecar(): AccountSidecar | null {
 	}
 }
 
-/** 写入账号侧车（失败只返回 false，绝不抛） */
+/** 写入账号侧车 (失败只返回 false，绝不抛)  */
 function writeSidecar(sidecar: AccountSidecar): boolean {
 	try {
 		const dir = getOpencodeDataDir();
@@ -2463,7 +2463,7 @@ function writeSidecar(sidecar: AccountSidecar): boolean {
 	}
 }
 
-/** 拉取账号列表（GET /v2/plugin/accounts） */
+/** 拉取账号列表 (GET /v2/plugin/accounts)  */
 async function fetchAccountEntries(accessToken: string): Promise<AccountEntry[]> {
 	try {
 		const response = await fetch(`${resolvedServerUrl}/v2/plugin/accounts`, {
@@ -2489,7 +2489,7 @@ async function fetchAccountEntries(accessToken: string): Promise<AccountEntry[]>
 	}
 }
 
-/** 解析当前 access token 绑定的账号（用 JWT sub 对齐 accounts[].uid） */
+/** 解析当前 access token 绑定的账号 (用 JWT sub 对齐 accounts[].uid)  */
 async function resolveBoundAccount(accessToken: string): Promise<AccountEntry | null> {
 	const list = await fetchAccountEntries(accessToken);
 	if (list.length === 0) return null;
@@ -2518,7 +2518,7 @@ async function syncSidecar(accessToken: string): Promise<AccountEntry | null> {
 	return account;
 }
 
-/** 把凭据写回宿主（只走 client.auth.set，绝不手工改 auth.json） */
+/** 把凭据写回宿主 (只走 client.auth.set，绝不手工改 auth.json)  */
 async function persistCredential(
 	client: PluginInput["client"] | null,
 	tokens: { accessToken: string; refreshToken?: string; expiresIn?: number },
@@ -2545,7 +2545,7 @@ async function persistCredential(
 
 /**
  * 弹出 TUI 提示条。
- * 铁律：绝不能无限等待 —— 没有 TUI 订阅者时（例如 headless 的 opencode run），
+ * 铁律：绝不能无限等待 —— 没有 TUI 订阅者时 (例如 headless 的 opencode run) ，
  * 服务端的 /tui/show-toast 会挂住不返回 awaited 就会把启动流程一起卡死。
  * 因此：固定超时 + fire-and-forget，绝不阻塞调用方。
  */
@@ -2568,7 +2568,7 @@ function showToast(message: string, variant: ToastVariant = "info"): void {
 	}
 }
 
-/** 在用户默认浏览器里打开登录地址（分离进程，不阻塞宿主） */
+/** 在用户默认浏览器里打开登录地址 (分离进程，不阻塞宿主)  */
 function openInBrowser(url: string, log: LogFn): boolean {
 	const fallback = (reason: string) => {
 		log(
@@ -2684,7 +2684,7 @@ async function pollTokenForLogin(
 			log("debug", `[${VERSION_TAG}] guided login poll error: ${String(err)}`);
 		}
 	}
-	return { ok: false, reason: "等待登录超时（5 分钟）" };
+	return { ok: false, reason: "等待登录超时 (5 分钟) " };
 }
 
 /** 真正执行一次引导登录：开浏览器 -> 轮询 -> 落盘 -> 更新侧车 -> 提示 */
@@ -2720,7 +2720,7 @@ async function performGuidedLogin(reason: string): Promise<boolean> {
 }
 
 /**
- * 引导登录入口（单飞）。
+ * 引导登录入口 (单飞) 。
  * 并发调用共享同一次尝试，避免重复开浏览器、重复轮询。
  */
 async function runGuidedLogin(reason: string): Promise<boolean> {
@@ -2739,7 +2739,7 @@ async function runGuidedLogin(reason: string): Promise<boolean> {
 
 /**
  * 带重试的异步调用。
- * 冷启动时首次 HTTPS 连接可能超时（DNS/TCP 握手），重试一次即可拿到稳定结果。
+ * 冷启动时首次 HTTPS 连接可能超时 (DNS/TCP 握手) ，重试一次即可拿到稳定结果。
  */
 async function withRetry<T>(
 	work: () => Promise<T>,
@@ -2758,7 +2758,7 @@ async function withRetry<T>(
 	throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/** 组装诊断报告（只含布尔值、计数、uid、昵称与过期时间戳，绝不含令牌） */
+/** 组装诊断报告 (只含布尔值、计数、uid、昵称与过期时间戳，绝不含令牌)  */
 async function buildDiagnosis(): Promise<DiagnosisReport> {
   const stored = readStoredAuth();
   const hasAccess = typeof stored?.access === "string" && stored.access.length > 0;
@@ -2810,7 +2810,7 @@ async function buildDiagnosis(): Promise<DiagnosisReport> {
 		expires,
 		expiresInMs,
 		expiresInHuman: formatRemaining(expiresInMs),
-		// 刷新路径是否可用：静态判断（凭据里带 refresh token 即具备刷新能力）。
+		// 刷新路径是否可用：静态判断 (凭据里带 refresh token 即具备刷新能力) 。
 		// 刻意不发起真实刷新 —— 那会轮换掉线上可用的 refresh token。
 		refreshViable: hasAccess && hasRefresh,
 		discoveryCount,
@@ -2834,7 +2834,7 @@ function formatRemaining(ms: number | null): string {
 	return `${minutes.toFixed(1)} 分钟`;
 }
 
-/** 生成诊断摘要文本（toast 用，简洁） */
+/** 生成诊断摘要文本 (toast 用，简洁)  */
 function formatDiagnosisSummary(report: DiagnosisReport): string {
   const parts: string[] = [];
   parts.push(report.credentialPresent ? "凭据有效" : "凭据缺失");
@@ -2845,7 +2845,7 @@ function formatDiagnosisSummary(report: DiagnosisReport): string {
   return `CodeBuddy: ${parts.join(" | ")}`;
 }
 
-/** 注入插件自有的两条命令（与既有 config.command 合并，不覆盖用户配置） */
+/** 注入插件自有的两条命令 (与既有 config.command 合并，不覆盖用户配置)  */
 function injectCodebuddyCommands(config: PluginConfig): void {
   const existing = (config.command || {}) as Record<
     string,
@@ -2855,20 +2855,20 @@ function injectCodebuddyCommands(config: PluginConfig): void {
     ...existing,
     [COMMAND_LOGIN]: {
       template:
-        "CodeBuddy 重新登录（由插件内部完成：自动打开浏览器完成 IOA 登录，无需模型介入）。",
-      description: "重新登录 CodeBuddy（自动打开浏览器完成 IOA 登录）",
+        "CodeBuddy 重新登录 (由插件内部完成：自动打开浏览器完成 IOA 登录，无需模型介入) 。",
+      description: "重新登录 CodeBuddy (自动打开浏览器完成 IOA 登录) ",
     },
     [COMMAND_DOCTOR]: {
       template:
-        "CodeBuddy 连接诊断（由插件内部完成：检查凭据、模型发现、设备令牌与绑定账号，无需模型介入）。",
-      description: "诊断 CodeBuddy 连接（凭据、模型发现、设备令牌、绑定账号）",
+        "CodeBuddy 连接诊断 (由插件内部完成：检查凭据、模型发现、设备令牌与绑定账号，无需模型介入) 。",
+      description: "诊断 CodeBuddy 连接 (凭据、模型发现、设备令牌、绑定账号) ",
     },
   };
 }
 
 /**
  * 账号比对：token 当前绑定的账号与侧车记录不一致 => 用户换了账号。
- * 首次运行（侧车不存在）只做初始化，不打扰用户。
+ * 首次运行 (侧车不存在) 只做初始化，不打扰用户。
  */
 async function reportAccountChange(accessToken: string, log: LogFn): Promise<void> {
   const account = await resolveBoundAccount(accessToken);
@@ -2911,7 +2911,7 @@ async function reportAccountChange(accessToken: string, log: LogFn): Promise<voi
 }
 
 /**
- * 处理插件自有的两条命令（命令钩子与事件兜底共用）。
+ * 处理插件自有的两条命令 (命令钩子与事件兜底共用) 。
  * codebuddy-login 会打开浏览器并最长等待 5 分钟 —— 一律放后台跑，绝不阻塞宿主。
  */
 async function handleCodebuddyCommand(command: string, args: string): Promise<void> {
@@ -2960,7 +2960,7 @@ async function handleSessionAuthFailure(error: unknown): Promise<void> {
 
 
 /**
- * 供外部脚本做离线诊断（构建产物可被 bun / node 直接 require）。
+ * 供外部脚本做离线诊断 (构建产物可被 bun / node 直接 require) 。
  * 绝不返回任何令牌内容。
  */
 export async function diagnoseForTest(): Promise<DiagnosisReport> {
@@ -2996,14 +2996,14 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
     } catch { /* ignore log failure */ }
   };
   hostLog = log;
-  // 宿主客户端 —— 供 toast / 凭据落盘复用（模块级，便于闭包外的钩子访问）
+  // 宿主客户端 —— 供 toast / 凭据落盘复用 (模块级，便于闭包外的钩子访问)
   hostClient = input.client;
 
   return {
     async config(config) {
       // 版本标识：每次启动打印一次，后续 stream ended 日志也带这个 tag
       log("info", `${VERSION_TAG} starting (schema=opencode-codebuddy-auth, build=${FORK_VERSION})`);
-      // 注入插件自有的两条命令（与既有 config.command 合并，不覆盖用户配置）
+      // 注入插件自有的两条命令 (与既有 config.command 合并，不覆盖用户配置)
       injectCodebuddyCommands(config);
       if (!config.provider) config.provider = {};
       if (!config.provider[PROVIDER_ID]) {
@@ -3111,7 +3111,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
       // 需要登录：不阻塞启动 —— 后台发起引导登录，同时给用户一个提示
       if (loginNeeded) {
         log("warn", `[${VERSION_TAG}] guided login required (${loginReason})`);
-        showToast("CodeBuddy 登录凭据缺失或已失效，正在发起重新登录（浏览器将自动打开）", "warning");
+        showToast("CodeBuddy 登录凭据缺失或已失效，正在发起重新登录 (浏览器将自动打开) ", "warning");
         void runGuidedLogin(loginReason || "startup").catch(() => {});
       }
 
@@ -3135,7 +3135,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
               return fetch(url, init);
             }
             // NOTE: 保持 info —— 请求级事件频率低，且是确认请求确实到达 fork、
-            // 版本加载是否正确的最直接证据（本轮多次调试靠它定位版本问题）。
+            // 版本加载是否正确的最直接证据 (本轮多次调试靠它定位版本问题) 。
             log("info", `[${VERSION_TAG}] fetch intercepted: ${urlStr.substring(0, 120)}`);
 
             const currentAuth = await getAuth();
@@ -3171,22 +3171,22 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
             let requestBody: OpenAIRequest = {
               ...openaiRequest,
               model: resolvedModel,
-              // 网关已不支持非流式（code 11101），强制 stream=true
+              // 网关已不支持非流式 (code 11101) ，强制 stream=true
               stream: true,
             };
             if (openaiRequest.response_format) {
               requestBody.response_format = openaiRequest.response_format;
             }
 
-            // 请求体级指纹净化（规避上游渠道校验 code 11128）：
-            // 上游对 system / assistant 消息（含 reasoning_content）做子串扫描，
+            // 请求体级指纹净化 (规避上游渠道校验 code 11128) ：
+            // 上游对 system / assistant 消息 (含 reasoning_content) 做子串扫描，
             // 任何一条历史消息残留的身份短语都会让整条请求被拒。
             // 只改写命中的片段，用户 AGENTS.md 指令完整保留。
             //
             // 三个开关各管一件事：
             //   CODEBUDDY_FINGERPRINT_SANITIZE   —— 文本改写总开关
-            //   CODEBUDDY_FINGERPRINT_SYSTEM_FIRST —— A1（首条消息必须是 system）
-            //   CODEBUDDY_FINGERPRINT_SCOPE      —— 作用范围（默认 system-assistant）
+            //   CODEBUDDY_FINGERPRINT_SYSTEM_FIRST —— A1 (首条消息必须是 system)
+            //   CODEBUDDY_FINGERPRINT_SCOPE      —— 作用范围 (默认 system-assistant)
             // 净化在**深拷贝**上进行 —— 宿主传入的请求对象绝不被就地修改。
             noteDeprecatedAliasOnce(log);
             const sanitizeText = isFingerprintSanitizeEnabled();
@@ -3221,7 +3221,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
               );
             }
 
-            // 设备令牌（TuringShield 原生插件）：默认关闭（opt-in），fail-open
+            // 设备令牌 (TuringShield 原生插件) ：默认关闭 (opt-in) ，fail-open
             const deviceToken = await getDeviceToken(log);
             log(
               "debug",
@@ -3274,7 +3274,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
               // 那句 "Illegal API invocation ..." 与裸错误码会重新进入对话，
               // 下一轮请求里又出现同样的指纹，于是又触发同一个错误：自污染回路。
               // 只记稳定分类：HTTP 状态 + 固定枚举标签 + 脱敏后的业务码
-              //（11128 映射成 CHANNEL_REJECT，绝不按裸数字写出去）。
+              // (11128 映射成 CHANNEL_REJECT，绝不按裸数字写出去) 。
               const classified = classifyUpstreamError(response.status, errorText);
               log(
                 "warn",
@@ -3324,7 +3324,7 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
       ],
     },
     async "chat.params"(input, output) {
-      // 捕获会话 ID —— 用于稳定派生会话维度 ID（X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId）
+      // 捕获会话 ID —— 用于稳定派生会话维度 ID (X-Conversation-ID / X-Trace-ID / X-B3-ParentSpanId)
       if (input?.sessionID) currentSessionId = input.sessionID;
       if (input.model.providerID !== PROVIDER_ID) return;
       output.options.baseURL = resolvedServerUrl;
@@ -3343,8 +3343,8 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
         // 原地清空 —— 彻底阻断本轮 LLM 调用
         output.parts.splice(0, output.parts.length);
         // 宿主对命令总会起一轮 assistant 消息：parts 被清空后这一轮是空消息，
-        // 上游会直接拒绝（messages must not be empty）并把整轮变成错误。
-        // 这里主动中止本会话的运行态，让这一轮干净收尾（不产生模型调用）。
+        // 上游会直接拒绝 (messages must not be empty) 并把整轮变成错误。
+        // 这里主动中止本会话的运行态，让这一轮干净收尾 (不产生模型调用) 。
         try {
           await hostClient?.session.abort({ path: { id: input.sessionID } });
         } catch { /* 忽略：中止失败不影响命令本身的处理 */ }
@@ -3387,16 +3387,16 @@ export const CodeBuddyAuthPlugin: Plugin = async (input) => {
       }
     },
     /**
-     * 系统提示词指纹净化（prompt 子集 —— 与请求体净化共用同一张规则表与同一个开关）。
-     * 只对本插件自己的 provider（codebuddy）生效；其它 provider 原样透传。
+     * 系统提示词指纹净化 (prompt 子集 —— 与请求体净化共用同一张规则表与同一个开关) 。
+     * 只对本插件自己的 provider (codebuddy) 生效；其它 provider 原样透传。
      * 命中短语的条目逐条替换，日志只记录被改动的条目数，绝不记录提示词内容。
      */
     async "experimental.chat.system.transform"(input, output) {
-      // 补充会话 ID 来源（system 钩子同样带 sessionID）
+      // 补充会话 ID 来源 (system 钩子同样带 sessionID)
       if (input?.sessionID) currentSessionId = input.sessionID;
-      // 废弃别名提示（首次见到时打一条 info）
+      // 废弃别名提示 (首次见到时打一条 info)
       noteDeprecatedAliasOnce(hostLog);
-      // 统一开关：CODEBUDDY_FINGERPRINT_SANITIZE（旧名 CODEBUDDY_PROMPT_SANITIZE 为别名）
+      // 统一开关：CODEBUDDY_FINGERPRINT_SANITIZE (旧名 CODEBUDDY_PROMPT_SANITIZE 为别名)
       if (!isFingerprintSanitizeEnabled()) return;
       if (input?.model?.providerID !== PROVIDER_ID) return;
       const list = output?.system;

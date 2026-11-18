@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 /**
- * 指纹净化黄金回归测试（零依赖，纯 node）
+ * 指纹净化黄金回归测试 (零依赖，纯 node)
  * ----------------------------------------------------------------------------
  * 用法：node scripts/verify-fingerprint.mjs
  *
  * 覆盖：
- *   1. 每条内置规则一条"输入 -> 期望输出"用例（body 29 条 + prompt 6 条）；
+ *   1. 每条内置规则一条"输入 -> 期望输出"用例 (body 29 条 + prompt 6 条) ；
  *   2. 幂等：sanitize(sanitize(x)) === sanitize(x)；
  *   3. 空内容：system 换中性默认提示词、assistant 无工具调用则丢弃；
- *   4. tool_calls[].function.arguments 改写后仍是合法 JSON（非法则回滚）；
+ *   4. tool_calls[].function.arguments 改写后仍是合法 JSON (非法则回滚) ；
  *   5. 深拷贝：净化绝不改写调用方传入的对象；
- *   6. 作用范围：system-assistant（默认）不改 user / tool，all 改；
+ *   6. 作用范围：system-assistant (默认) 不改 user / tool，all 改；
  *   7. 开关：净化总开关 / system-first 开关 / 作用范围开关 / 废弃别名；
  *   8. 日志防自污染：失败路径写出的日志里不含 11128 与上游原句。
- *   9. 请求头契约：对齐官方 CodeBuddy IDE 4.12.4 抓包（ID 形态与作用域、
- *      b3 家族、客户端埋点时间戳、已删除的冗余头、版本号）。
+ *   9. 请求头契约：对齐官方 CodeBuddy IDE 4.12.4 抓包 (ID 形态与作用域、
+ *      b3 家族、客户端埋点时间戳、已删除的冗余头、版本号) 。
  *
- * 依赖：只依赖仓库根目录的构建产物 index.js（零第三方运行时依赖）。
+ * 依赖：只依赖仓库根目录的构建产物 index.js (零第三方运行时依赖) 。
  */
 
 const mod = await import("../index.js");
@@ -73,11 +73,11 @@ function addCase(id, fn, input, expected) {
 }
 
 // ============================================================================
-// 1. body 规则用例（29 条 —— 与内置规则一一对应）
+// 1. body 规则用例 (29 条 —— 与内置规则一一对应)
 // ============================================================================
 
 const BODY_CASES = [
-  // R1 固定短语表（20 条）
+  // R1 固定短语表 (20 条)
   ["body-lit-ai-agent-harness",
     "You are an AI agent powered by DeepSeek Harness.",
     "You are an AI agent running inside this harness."],
@@ -138,7 +138,7 @@ const BODY_CASES = [
   ["body-lit-sisyphus-junior",
     "Sisyphus-Junior - Focused executor from OhMyOpenCode",
     "Focused executor"],
-  // R2 品牌名改写（3 条）
+  // R2 品牌名改写 (3 条)
   ["body-brand-deepseek-harness",
     "Runtime: DeepSeek Harness today.",
     "Runtime: this harness today."],
@@ -148,7 +148,7 @@ const BODY_CASES = [
   ["body-brand-ohmyopencode",
     "From OhMyOpenCode docs.",
     "From this workspace docs."],
-  // R3~R8 正则规则（6 条）
+  // R3~R8 正则规则 (6 条)
   ["body-identity-clause",
     "You are an AI agent powered by some internal runtime.",
     "You are a helpful AI assistant."],
@@ -174,7 +174,7 @@ for (const [id, input, expected] of BODY_CASES) {
 }
 
 // ============================================================================
-// 2. prompt 规则用例（6 条 —— system-transform 钩子的规则子集）
+// 2. prompt 规则用例 (6 条 —— system-transform 钩子的规则子集)
 // ============================================================================
 
 const PROMPT_CASES = [
@@ -203,7 +203,7 @@ for (const [id, input, expected] of PROMPT_CASES) {
 }
 
 // ============================================================================
-// 3. 空内容处理（system -> 中性默认提示词；assistant 无工具调用 -> 丢弃）
+// 3. 空内容处理 (system -> 中性默认提示词；assistant 无工具调用 -> 丢弃)
 // ============================================================================
 
 const NEUTRAL_SYSTEM = "You are a helpful assistant.";
@@ -234,7 +234,7 @@ const NEUTRAL_SYSTEM = "You are a helpful assistant.";
 }
 
 {
-  // assistant 带 tool_calls 时不丢（工具调用轮次必须保留）
+  // assistant 带 tool_calls 时不丢 (工具调用轮次必须保留)
   const res = sanitizePayloadForTest({
     messages: [
       { role: "system", content: NEUTRAL_SYSTEM },
@@ -360,7 +360,7 @@ const NEUTRAL_SYSTEM = "You are a helpful assistant.";
 }
 
 // ============================================================================
-// 6. 作用范围：默认 system-assistant（不改 user / tool），all 才全改
+// 6. 作用范围：默认 system-assistant (不改 user / tool) ，all 才全改
 // ============================================================================
 
 {
@@ -425,7 +425,7 @@ const NEUTRAL_SYSTEM = "You are a helpful assistant.";
 }
 
 // ============================================================================
-// 7b. 净化开关与 A1 相互独立（关掉文本改写，A1 照常；关掉 A1，文本照常改写）
+// 7b. 净化开关与 A1 相互独立 (关掉文本改写，A1 照常；关掉 A1，文本照常改写)
 // ============================================================================
 
 {
@@ -543,7 +543,7 @@ async function runFailurePath(status, headers, body) {
 }
 
 {
-  // 2xx + JSON 错误体：必须被识别并分类（body 仍原样转发）
+  // 2xx + JSON 错误体：必须被识别并分类 (body 仍原样转发)
   const upstreamBody = JSON.stringify({
     code: 11128,
     msg: "Illegal API invocation from an unapproved channel",
@@ -573,7 +573,7 @@ async function runFailurePath(status, headers, body) {
 }
 
 // ============================================================================
-// 9. 请求头契约（对齐官方 CodeBuddy IDE 4.12.4 抓包）
+// 9. 请求头契约 (对齐官方 CodeBuddy IDE 4.12.4 抓包)
 // ============================================================================
 
 {
