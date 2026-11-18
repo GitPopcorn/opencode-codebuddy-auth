@@ -773,6 +773,33 @@ export function getFingerprintScope() {
         return "all";
     return "system-assistant";
 }
+/**
+ * 默认要从 user 消息迁出到 system 消息的注入块标签。
+ * 宿主会把 harness 指令块 (如 <system-reminder>…</system-reminder>)
+ * 塞进 role:"user" 的 content；网关却把**第一条 user 文本**记录成账号用量页的
+ * 展示"提示词"，于是每次请求都显示同一段样板文字 —— 固定指纹，账号风险。
+ */
+const DEFAULT_RELOCATE_TAGS = ["system-reminder", "user_info"];
+/**
+ * 解析 CODEBUDDY_RELOCATE_TAGS：逗号分隔的标签名。
+ * off / 空值 -> 返回 null (整步停用) 。
+ * 返回值为 null 表示停用，空数组也表示停用。
+ */
+export function getRelocateTags() {
+    const raw = process.env.CODEBUDDY_RELOCATE_TAGS;
+    if (raw === undefined)
+        return [...DEFAULT_RELOCATE_TAGS];
+    const value = raw.trim();
+    if (!value)
+        return null;
+    if (isSwitchOff(value))
+        return null;
+    const tags = value
+        .split(",")
+        .map((tag) => tag.trim().replace(/^<|>$/g, ""))
+        .filter((tag) => tag.length > 0);
+    return tags.length > 0 ? tags : null;
+}
 /** 废弃别名的提示只打一次 */
 let deprecatedAliasNotified = false;
 /** 首次见到废弃别名时打一条 info (提醒迁移到 CODEBUDDY_FINGERPRINT_SANITIZE)  */
@@ -980,6 +1007,7 @@ export function sanitizePayloadForTest(body, options = {}) {
         messagesRewritten: 0,
         spansRewritten: 0,
         systemFirstApplied: false,
+        blocksRelocated: 0,
         emptyContentReplaced: 0,
         emptyAssistantDropped: 0,
         toolArgsRolledBack: 0,
@@ -998,6 +1026,13 @@ export function sanitizePayloadForTest(body, options = {}) {
     if (systemFirst) {
         ensureSystemFirst(messages);
         result.systemFirstApplied = true;
+    }
+    const messagesScanned = messages.length;
+    // A2 —— 把 user 消息里的宿主注入块迁到 system 消息 (必须在 A1 之后、指纹改写之前) ：
+    // 网关记录的第一条 user 文本会变成账号用量页的展示提示词，注入块必须让位给真实问题。
+    const relocateTags = options.relocateTags === undefined ? getRelocateTags() : options.relocateTags;
+    if (relocateTags && relocateTags.length > 0) {
+        result.blocksRelocated = relocateInjectedBlocks(messages, relocateTags);
     }
     let messagesRewritten = 0;
     let spansRewritten = 0;
@@ -1030,10 +1065,11 @@ export function sanitizePayloadForTest(body, options = {}) {
     nextPayload.messages = kept;
     return {
         body: nextPayload,
-        messagesScanned: messages.length,
+        messagesScanned,
         messagesRewritten,
         spansRewritten,
         systemFirstApplied: result.systemFirstApplied,
+        blocksRelocated: result.blocksRelocated,
         emptyContentReplaced,
         emptyAssistantDropped,
         toolArgsRolledBack,
@@ -1061,6 +1097,220 @@ function ensureSystemFirst(messages) {
             role: "system",
             content: FINGERPRINT_DEFAULT_SYSTEM_PROMPT,
         });
+    }
+}
+// ============================================================================
+// A2 —— 把 user 消息里的宿主注入块迁到 system 消息
+// ----------------------------------------------------------------------------
+// 为什么必须做：网关把请求里**第一条 user 文本**记录成账号用量页的展示"提示词"。
+// 宿主 (OpenCode) 会往 role:"user" 的 content 里插入 harness 指令块
+// (典型如 <system-reminder>…</system-reminder>) ，于是每条请求的"提示词"都变成
+// 同一段样板文字 —— 稳定、逐字节相同的指纹，属于账号风险。
+//
+// 迁移后模型仍然看得见这些指令 (只是变成 system 级，位置其实更合理) ，
+// 而用户可见 / 被上游记录的提示词恢复成真实问题。
+//
+// 约束：幂等 (迁完之后 user 里再没有这些块) 、fail-open (出错就整步放弃) 。
+// ============================================================================
+/** 把标签名转义成可用于 RegExp 的字面量 */
+function escapeRegExpLiteral(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+/**
+ * 构造注入块匹配式：<(tag1|tag2)\b[^>]*>[\s\S]*?<\/\1>
+ * 反向引用保证开闭标签同名。标签列表为空时返回 null。
+ */
+function buildRelocatePattern(tags) {
+    const alternation = tags
+        .map((tag) => escapeRegExpLiteral(tag))
+        .filter((tag) => tag.length > 0)
+        .join("|");
+    if (!alternation)
+        return null;
+    return new RegExp(`<(${alternation})\\b[^>]*>[\\s\\S]*?<\\/\\1>`, "gi");
+}
+/** 从一段文本里提取所有注入块，并返回移除后的文本 */
+function extractBlocksFromText(text, pattern) {
+    const blocks = [];
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text)) !== null) {
+        blocks.push(match[0]);
+        if (match[0].length === 0)
+            pattern.lastIndex++;
+    }
+    if (blocks.length === 0)
+        return { blocks: [], rest: text };
+    pattern.lastIndex = 0;
+    const rest = text.replace(pattern, "");
+    return { blocks, rest };
+}
+/**
+ * 从 user 消息的 content 里提取注入块。
+ * 字符串与分片数组两种形态都支持；数组只改写 type === "text" 的分片，
+ * 提取后变空的分片直接丢掉。
+ */
+function extractBlocksFromContent(content, pattern) {
+    if (typeof content === "string") {
+        const { blocks, rest } = extractBlocksFromText(content, pattern);
+        if (blocks.length === 0)
+            return { changed: false, blocks, content };
+        return { changed: true, blocks, content: rest.trim() };
+    }
+    if (Array.isArray(content)) {
+        const collected = [];
+        const parts = [];
+        let changed = false;
+        for (const part of content) {
+            if (part && typeof part === "object") {
+                const p = part;
+                if (p.type === "text" && typeof p.text === "string") {
+                    const { blocks, rest } = extractBlocksFromText(p.text, pattern);
+                    if (blocks.length > 0) {
+                        changed = true;
+                        collected.push(...blocks);
+                        const trimmed = rest.trim();
+                        // 提取后变空的文本分片不要了
+                        if (trimmed !== "") {
+                            p.text = trimmed;
+                            parts.push(part);
+                        }
+                        continue;
+                    }
+                }
+            }
+            parts.push(part);
+        }
+        if (!changed)
+            return { changed: false, blocks: collected, content };
+        return { changed: true, blocks: collected, content: parts };
+    }
+    return { changed: false, blocks: [], content };
+}
+/** content 是否已经没有任何有意义的内容 (空串 / 空数组 / 只剩空文本分片)  */
+function isEmptyMessageContent(content) {
+    if (typeof content === "string")
+        return content.trim() === "";
+    if (Array.isArray(content)) {
+        for (const part of content) {
+            if (!part || typeof part !== "object")
+                return false;
+            const p = part;
+            if (p.type !== "text")
+                return false; // 非文本分片 (图片等) 是有意义内容
+            if (typeof p.text === "string" && p.text.trim() !== "")
+                return false;
+        }
+        return true;
+    }
+    return content === null || content === undefined;
+}
+/** 把迁出的块追加到 system 消息 content 末尾 (逐字节保留块原文)  */
+function appendBlocksToSystem(systemMessage, blocks) {
+    if (blocks.length === 0)
+        return;
+    if (!systemMessage || typeof systemMessage !== "object")
+        return;
+    const system = systemMessage;
+    const joined = blocks.join("\n\n");
+    const content = system.content;
+    if (typeof content === "string") {
+        const separator = content.length > 0 ? "\n\n" : "";
+        system.content = content + separator + joined;
+        return;
+    }
+    if (Array.isArray(content)) {
+        let target = null;
+        for (const part of content) {
+            if (!part || typeof part !== "object")
+                continue;
+            const p = part;
+            if (p.type === "text" && typeof p.text === "string")
+                target = p;
+        }
+        if (target) {
+            const current = typeof target.text === "string" ? target.text : "";
+            const separator = current.length > 0 ? "\n\n" : "";
+            target.text = current + separator + joined;
+        }
+        else {
+            content.push({ type: "text", text: joined });
+        }
+        return;
+    }
+    system.content = joined;
+}
+/**
+ * 把 user 消息里的注入块迁到第一条 system 消息。
+ * @return 迁出的块数 (0 表示什么都没动)
+ * fail-open：任何异常都回滚 messages 并返回 0，绝不抛出。
+ */
+function relocateInjectedBlocks(messages, tags) {
+    // STEP 找到承接块的 system 消息；A1 开启时它必然是 messages[0]
+    let systemIndex = -1;
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
+        if (!message || typeof message !== "object")
+            continue;
+        if (message.role === "system") {
+            systemIndex = i;
+            break;
+        }
+    }
+    if (systemIndex < 0)
+        return 0;
+    let pattern = null;
+    try {
+        pattern = buildRelocatePattern(tags);
+    }
+    catch {
+        return 0;
+    }
+    if (!pattern)
+        return 0;
+    // 出错回滚用的快照
+    const snapshot = messages.map((message) => cloneValue(message));
+    try {
+        const keptMessages = [];
+        const collected = [];
+        let blocksRelocated = 0;
+        for (const message of messages) {
+            if (!message || typeof message !== "object") {
+                keptMessages.push(message);
+                continue;
+            }
+            const msg = message;
+            if (msg.role !== "user") {
+                keptMessages.push(message);
+                continue;
+            }
+            const extracted = extractBlocksFromContent(msg.content, pattern);
+            if (!extracted.changed || extracted.blocks.length === 0) {
+                keptMessages.push(message);
+                continue;
+            }
+            blocksRelocated += extracted.blocks.length;
+            collected.push(...extracted.blocks);
+            const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+            // 只剩空壳且没有工具调用 -> 整条消息丢掉 (上游拒绝空消息)
+            if (isEmptyMessageContent(extracted.content) && !hasToolCalls)
+                continue;
+            msg.content = extracted.content;
+            keptMessages.push(message);
+        }
+        if (blocksRelocated === 0)
+            return 0;
+        appendBlocksToSystem(messages[systemIndex], collected);
+        // 就地替换数组内容，保持 messages 的数组引用不变
+        messages.length = 0;
+        messages.push(...keptMessages);
+        return blocksRelocated;
+    }
+    catch {
+        // fail-open —— 回滚到快照，body 保持原样
+        messages.length = 0;
+        messages.push(...snapshot);
+        return 0;
     }
 }
 /**
@@ -1590,7 +1840,10 @@ const REASONING_BATCH_CHARS = 400;
 //            5. ID 形态改为 32 位小写 hex (X-Request-Trace-Id 仍为 UUID v4) ，
 //               X-Conversation-Message-ID 不再与 X-Request-ID 同值，
 //               会话维度 ID 由 sha256(sessionID) 稳定派生
-const FORK_VERSION = "4.2.0";
+//   v4.2.1 = A2 注入块迁移：user 消息里的宿主指令块 (默认 <system-reminder> /
+//            <user_info>) 迁到 system 消息末尾 —— 网关记录的展示提示词恢复成
+//            真实问题；可用 CODEBUDDY_RELOCATE_TAGS 覆盖标签，off / 空值停用
+const FORK_VERSION = "4.2.1";
 const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
 function buildReasoningChunk(reasoningText) {
     const rcObj = {
@@ -2682,7 +2935,7 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         });
                         requestBody = sanitized.body;
                         if (sanitizeText) {
-                            log("info", `[${VERSION_TAG}] fingerprint sanitize: scope=${sanitized.scope} messages scanned=${sanitized.messagesScanned} rewritten=${sanitized.messagesRewritten} spans=${sanitized.spansRewritten} empty-replaced=${sanitized.emptyContentReplaced} empty-dropped=${sanitized.emptyAssistantDropped}`);
+                            log("info", `[${VERSION_TAG}] fingerprint sanitize: scope=${sanitized.scope} messages scanned=${sanitized.messagesScanned} rewritten=${sanitized.messagesRewritten} spans=${sanitized.spansRewritten} relocated=${sanitized.blocksRelocated} empty-replaced=${sanitized.emptyContentReplaced} empty-dropped=${sanitized.emptyAssistantDropped}`);
                         }
                         else {
                             log("debug", `[${VERSION_TAG}] fingerprint sanitize text rewriting disabled (CODEBUDDY_FINGERPRINT_SANITIZE=off)`);

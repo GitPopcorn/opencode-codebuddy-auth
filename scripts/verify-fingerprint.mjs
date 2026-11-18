@@ -15,6 +15,8 @@
  *   8. 日志防自污染：失败路径写出的日志里不含 11128 与上游原句。
  *   9. 请求头契约：对齐官方 CodeBuddy IDE 4.12.4 抓包 (ID 形态与作用域、
  *      b3 家族、客户端埋点时间戳、已删除的冗余头、版本号) 。
+ *  10. A2 注入块迁移：user 里的 <system-reminder> / <user_info> 块搬到 system，
+ *      用户提示词只留真实问题 (含开关、幂等、计数、数组形态) 。
  *
  * 依赖：只依赖仓库根目录的构建产物 index.js (零第三方运行时依赖) 。
  */
@@ -463,6 +465,215 @@ const NEUTRAL_SYSTEM = "You are a helpful assistant.";
   check("system-first-off[not applied]", noSystemFirst.systemFirstApplied, false);
   check("system-first-off[text still rewritten]", noSystemFirst.body.messages[0].content, "Focused executor");
   caseCount++;
+}
+
+// ============================================================================
+// 7c. A2 注入块迁移：user 消息里的宿主指令块搬到 system 消息
+// ----------------------------------------------------------------------------
+// 网关把请求里第一条 user 文本记成账号用量页的展示"提示词"。
+// 宿主注入的 <system-reminder> / <user_info> 块必须让位给真实问题。
+// ============================================================================
+
+const RELOCATE_REMINDER = "<system-reminder>run the scheduler workflow</system-reminder>";
+const RELOCATE_QUESTION = "这个函数为什么会返回空数组";
+
+{
+  const envBackup = { ...process.env };
+  delete process.env.CODEBUDDY_RELOCATE_TAGS;
+
+  // --- 7c-1 只有注入块的 user 消息 -> 整条丢弃，块进入 system ---
+  {
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: RELOCATE_REMINDER },
+      ],
+    });
+    const messages = res.body.messages;
+    check("relocate[only-block] message count", messages.length, 1);
+    check("relocate[only-block] first message role", messages[0].role, "system");
+    checkTrue(
+      "relocate[only-block] block moved to system",
+      typeof messages[0].content === "string" &&
+        messages[0].content.includes(RELOCATE_REMINDER),
+      `system content: ${JSON.stringify(messages[0].content)}`,
+    );
+    check("relocate[only-block] counter", res.blocksRelocated, 1);
+    caseCount++;
+  }
+
+  // --- 7c-2 块在前、真实问题在后 -> 块迁走，问题原样保留 ---
+  {
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: `${RELOCATE_REMINDER}\n\n${RELOCATE_QUESTION}` },
+      ],
+    });
+    const messages = res.body.messages;
+    check("relocate[block-then-question] message count", messages.length, 2);
+    check("relocate[block-then-question] question preserved", messages[1].content, RELOCATE_QUESTION);
+    checkTrue(
+      "relocate[block-then-question] block in system",
+      typeof messages[0].content === "string" &&
+        messages[0].content.includes(RELOCATE_REMINDER),
+      `system content: ${JSON.stringify(messages[0].content)}`,
+    );
+    checkTrue(
+      "relocate[block-then-question] system kept original text",
+      typeof messages[0].content === "string" &&
+        messages[0].content.startsWith(NEUTRAL_SYSTEM),
+      `system content: ${JSON.stringify(messages[0].content)}`,
+    );
+    check("relocate[block-then-question] counter", res.blocksRelocated, 1);
+    caseCount++;
+  }
+
+  // --- 7c-3 单条消息多个块 + 多条 user 消息各带块 ---
+  {
+    const REMINDER_A = "<system-reminder>first injected block</system-reminder>";
+    const REMINDER_B = "<system-reminder>second injected block</system-reminder>";
+    const REMINDER_C = "<system-reminder>third injected block</system-reminder>";
+    const QUESTION_A = "解释一下这个报错";
+    const QUESTION_B = "继续上一轮的修改";
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: `${REMINDER_A}\n${REMINDER_B}\n${QUESTION_A}` },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: `${REMINDER_C}\n${QUESTION_B}` },
+      ],
+    });
+    const messages = res.body.messages;
+    check("relocate[multi] message count", messages.length, 4);
+    check("relocate[multi] first question preserved", messages[1].content, QUESTION_A);
+    check("relocate[multi] second question preserved", messages[3].content, QUESTION_B);
+    for (const block of [REMINDER_A, REMINDER_B, REMINDER_C]) {
+      checkTrue(
+        `relocate[multi] ${block.slice(1, 20)} in system`,
+        typeof messages[0].content === "string" && messages[0].content.includes(block),
+        `system content: ${JSON.stringify(messages[0].content)}`,
+      );
+    }
+    check("relocate[multi] counter", res.blocksRelocated, 3);
+    caseCount++;
+  }
+
+  // --- 7c-4 <user_info> 块同样迁移 ---
+  {
+    const USER_INFO = "<user_info>workspace root: E:\\work</user_info>";
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: `${USER_INFO}\n${RELOCATE_QUESTION}` },
+      ],
+    });
+    const messages = res.body.messages;
+    check("relocate[user_info] question preserved", messages[1].content, RELOCATE_QUESTION);
+    checkTrue(
+      "relocate[user_info] block in system",
+      typeof messages[0].content === "string" && messages[0].content.includes(USER_INFO),
+      `system content: ${JSON.stringify(messages[0].content)}`,
+    );
+    check("relocate[user_info] counter", res.blocksRelocated, 1);
+    caseCount++;
+  }
+
+  // --- 7c-5 数组形态 content：只改写 text 分片，空的 text 分片丢弃 ---
+  {
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: RELOCATE_REMINDER },
+            { type: "text", text: RELOCATE_QUESTION },
+            { type: "image", image_url: "data:image/png;base64,AAAA" },
+          ],
+        },
+      ],
+    });
+    const content = res.body.messages[1].content;
+    checkTrue("relocate[array] content is array", Array.isArray(content), `actual: ${JSON.stringify(content)}`);
+    check("relocate[array] text part count", content.filter((p) => p.type === "text").length, 1);
+    check("relocate[array] question preserved", content[0].text, RELOCATE_QUESTION);
+    check("relocate[array] image part kept", content.filter((p) => p.type === "image").length, 1);
+    check("relocate[array] counter", res.blocksRelocated, 1);
+    caseCount++;
+  }
+
+  // --- 7c-6 只有块但带 tool_calls -> 消息保留 ---
+  {
+    const res = sanitizePayloadForTest({
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        {
+          role: "user",
+          content: RELOCATE_REMINDER,
+          tool_calls: [
+            { id: "c1", type: "function", function: { name: "read", arguments: "{}" } },
+          ],
+        },
+      ],
+    });
+    check("relocate[tool_calls] message kept", res.body.messages.length, 2);
+    check("relocate[tool_calls] counter", res.blocksRelocated, 1);
+    caseCount++;
+  }
+
+  // --- 7c-7 CODEBUDDY_RELOCATE_TAGS=off 停用整步 (body 不变) ---
+  {
+    process.env.CODEBUDDY_RELOCATE_TAGS = "off";
+    const input = {
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: RELOCATE_REMINDER },
+        { role: "user", content: RELOCATE_QUESTION },
+      ],
+    };
+    const snapshot = JSON.stringify(input);
+    const res = sanitizePayloadForTest(input);
+    check("relocate[off] counter", res.blocksRelocated, 0);
+    check("relocate[off] body unchanged", JSON.stringify(res.body), snapshot);
+    check("relocate[off] message count", res.body.messages.length, 3);
+    delete process.env.CODEBUDDY_RELOCATE_TAGS;
+    caseCount++;
+  }
+
+  // --- 7c-8 幂等：第二遍迁出 0 块，序列化结果完全一致 ---
+  {
+    const input = {
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: `${RELOCATE_REMINDER}\n\n${RELOCATE_QUESTION}` },
+        { role: "user", content: "<user_info>locale: zh-CN</user_info>" },
+      ],
+    };
+    const first = sanitizePayloadForTest(input);
+    const second = sanitizePayloadForTest(first.body);
+    check("relocate[idempotent] first counter", first.blocksRelocated, 2);
+    check("relocate[idempotent] second counter", second.blocksRelocated, 0);
+    check("relocate[idempotent] identical body", JSON.stringify(second.body), JSON.stringify(first.body));
+    check("relocate[idempotent] user message count", second.body.messages.filter((m) => m.role === "user").length, 1);
+    caseCount++;
+  }
+
+  // --- 7c-9 深层不变量：调用方传入的对象仍未被改写 ---
+  {
+    const input = {
+      messages: [
+        { role: "system", content: NEUTRAL_SYSTEM },
+        { role: "user", content: `${RELOCATE_REMINDER}\n${RELOCATE_QUESTION}` },
+      ],
+    };
+    const snapshot = JSON.stringify(input);
+    sanitizePayloadForTest(input);
+    check("relocate[deep-copy] input untouched", JSON.stringify(input), snapshot);
+    caseCount++;
+  }
+
+  process.env = envBackup;
 }
 
 // ============================================================================

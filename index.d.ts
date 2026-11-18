@@ -48,6 +48,12 @@ export declare function isSystemFirstEnabled(): boolean;
  * 消息，user / tool 角色携带同样短语时上游返回 200 (P1/P2 实测通过) 。
  */
 export declare function getFingerprintScope(): FingerprintScope;
+/**
+ * 解析 CODEBUDDY_RELOCATE_TAGS：逗号分隔的标签名。
+ * off / 空值 -> 返回 null (整步停用) 。
+ * 返回值为 null 表示停用，空数组也表示停用。
+ */
+export declare function getRelocateTags(): string[] | null;
 /** 请求体净化的可调项 */
 export interface FingerprintSanitizeOptions {
     /** 是否保证首条消息是 system (默认 true；由 CODEBUDDY_FINGERPRINT_SYSTEM_FIRST 控制)  */
@@ -56,6 +62,12 @@ export interface FingerprintSanitizeOptions {
     rewriteText?: boolean;
     /** 作用范围 (默认取环境变量解析结果)  */
     scope?: FingerprintScope;
+    /**
+     * 要从 user 消息迁到 system 消息的注入块标签。
+     * 缺省时由 CODEBUDDY_RELOCATE_TAGS 解析 (默认 system-reminder / user_info) ；
+     * 显式传 null 或空数组表示停用该步骤。
+     */
+    relocateTags?: string[] | null;
 }
 /** 请求体净化结果 (只含计数，绝不含内容)  */
 export interface FingerprintSanitizeResult {
@@ -64,6 +76,8 @@ export interface FingerprintSanitizeResult {
     messagesRewritten: number;
     spansRewritten: number;
     systemFirstApplied: boolean;
+    /** 从 user 消息迁到 system 消息的注入块数量 */
+    blocksRelocated: number;
     emptyContentReplaced: number;
     emptyAssistantDropped: number;
     toolArgsRolledBack: number;
