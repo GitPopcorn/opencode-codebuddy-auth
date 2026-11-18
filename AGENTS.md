@@ -30,6 +30,22 @@ node scripts/verify-fingerprint.mjs   # 指纹净化黄金回归测试 (零依�
   是否最新产物 (OpenCode 进程有模块缓存，重启后看 `starting` 日志的版本号来判断)
 - 产物 `index.js` 必须与 `src/index.ts` 同步 (改完跑 `npm run build`)
 
+## 文本规范 (全角圆括号)
+
+代码、注释、文档里的圆括号一律用半角 `(` `)`，禁止使用全角左圆括号 (U+FF08) 与全角右圆括号 (U+FF09)。
+本条规则刻意只写码位、不写字形，目的是让全仓批量处理能无豁免地重复执行，不会把规则文本自身改掉。
+
+- 替换形态：全角左圆括号 → ` (`，全角右圆括号 → `) ` (半角括号外侧补一个空格，保持中西文混排间距)
+- 例外只限两类：被引号或反引号括含的引用内容、正则或匹配串里的字面字符。改任何字符串前必须确认它不是匹配键
+  (既有代码里规则表 R1~R8、命令名常量、错误码比较均不含该字符)
+- 批量处理命令：
+
+    jsinvokefiles modify process-text formatReplaceMarkdownFullWidthParenthesesOnly --script-seq 1 --file <显式文件路径...> --force
+
+- 必须用显式 `--file` 枚举，不要用 `-g` 通配符：工具的文件发现不排除 `node_modules`，`-g` 配合 `-r Y` 会钻进依赖目录
+- 该方法会顺带移除行尾空白，并把混合行尾统一为文件内占多数的形态。处理完复查 `git diff`，并删除工具生成的 `*.js_inv.bak`
+- 改完注释与文案后跑 `npm run build`，`index.js` 与 `index.d.ts` 必须与 `src/index.ts` 保持同步
+
 ## 架构要点
 
 - `src/index.ts` 是唯一源文件，导出 `CodeBuddyAuthPlugin` (Plugin 类型) 和 default export
