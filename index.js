@@ -3093,10 +3093,10 @@ export const CodeBuddyAuthPlugin = async (input) => {
             output.options.baseURL = resolvedServerUrl;
         },
         /**
-         * 命令拦截：插件自有的两条命令在本地直接处理，不触发任何模型调用。
-         * 清空 output.parts 时必须原地修改 —— 宿主拿到的是同一个数组引用，
-         * 重新赋值只会改到副本，宿主仍会用原数组发起模型调用。
-         */
+     * 命令拦截：插件自有的两条命令在本地直接处理，不触发任何模型调用。
+     * 清空 output.parts 时必须原地修改 —— 宿主拿到的是同一个数组引用，
+     * 重新赋值只会改到副本，宿主仍会用原数组发起模型调用。
+     */
         async "command.execute.before"(input, output) {
             try {
                 const cmd = (input?.command || "").trim().toLowerCase();
@@ -3119,11 +3119,11 @@ export const CodeBuddyAuthPlugin = async (input) => {
             }
         },
         /**
-         * 事件钩子：
-         *   1. session.error —— 判定为鉴权失败时自动续期 / 引导登录
-         *   2. command.executed —— 命令钩子没兜住的场景下做事件兜底
-         * 绝不抛异常出去 —— 宿主对插件钩子的异常没有兜底。
-         */
+     * 事件钩子：
+     *   1. session.error —— 判定为鉴权失败时自动续期 / 引导登录
+     *   2. command.executed —— 命令钩子没兜住的场景下做事件兜底
+     * 绝不抛异常出去 —— 宿主对插件钩子的异常没有兜底。
+     */
         async event({ event }) {
             try {
                 if (event.type === "session.error") {
@@ -3150,10 +3150,10 @@ export const CodeBuddyAuthPlugin = async (input) => {
             }
         },
         /**
-         * 系统提示词指纹净化 (prompt 子集 —— 与请求体净化共用同一张规则表与同一个开关) 。
-         * 只对本插件自己的 provider (codebuddy) 生效；其它 provider 原样透传。
-         * 命中短语的条目逐条替换，日志只记录被改动的条目数，绝不记录提示词内容。
-         */
+     * 系统提示词指纹净化 (prompt 子集 —— 与请求体净化共用同一张规则表与同一个开关) 。
+     * 只对本插件自己的 provider (codebuddy) 生效；其它 provider 原样透传。
+     * 命中短语的条目逐条替换，日志只记录被改动的条目数，绝不记录提示词内容。
+     */
         async "experimental.chat.system.transform"(input, output) {
             // 补充会话 ID 来源 (system 钩子同样带 sessionID)
             if (input?.sessionID)

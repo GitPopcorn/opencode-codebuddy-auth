@@ -86,10 +86,10 @@ export interface FingerprintSanitizeOptions {
     /** 作用范围 (默认取环境变量解析结果)  */
     scope?: FingerprintScope;
     /**
-     * 要从 user 消息迁到 system 消息的注入块标签。
-     * 缺省时由 CODEBUDDY_RELOCATE_TAGS 解析 (默认 system-reminder / user_info) ；
-     * 显式传 null 或空数组表示停用该步骤。
-     */
+   * 要从 user 消息迁到 system 消息的注入块标签。
+   * 缺省时由 CODEBUDDY_RELOCATE_TAGS 解析 (默认 system-reminder / user_info) ；
+   * 显式传 null 或空数组表示停用该步骤。
+   */
     relocateTags?: string[] | null;
 }
 /** 请求体净化结果 (只含计数，绝不含内容)  */
