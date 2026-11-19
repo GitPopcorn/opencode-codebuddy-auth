@@ -1,0 +1,126 @@
+# 该配置文件是否为根配置文件
+# NOTE EditorConfig 规格要求 root 必须在文件顶部、任何 section 之外；
+#      写在 section 内可能被实现静默忽略，导致父目录的 .editorconfig 被意外继承。
+root = true
+
+# 全类型文件配置
+[*]
+# 缩进符设置
+indent_style = tab
+# 缩进宽度，如果该宽度小于一个制表符的宽度，则会使用空格作代替
+indent_size = 4
+# 每一个制表符在文件中显示的宽度
+tab_width = 4
+# 换行符类型 (保存时修改)
+end_of_line = crlf
+# 保存时是否在尾部插入空行
+insert_final_newline = true
+# 保存时是否移除行尾的所有空字符
+trim_trailing_whitespace = false
+# 是否在空行保持缩进 (任意格式文件)
+ij_any_keep_indents_on_empty_lines = true
+
+# 前端文件配置
+# NOTE 本仓 [src/index.ts] 与 [scripts/verify-fingerprint.mjs] 现为空格缩进，
+#      此处仍按工作区口径声明 TAB；若要一次性改为 TAB，先看 [AGENTS.md] 的缩进整改一节。
+[*.{js,jsx,ts,tsx,mjs,cjs,vue,json,jsonc,css,less,sass,scss,html}]
+# 字符编码集
+charset = utf-8
+# 缩进符设置
+indent_style = tab
+# 缩进宽度，如果该宽度小于一个制表符的宽度，则会使用空格作代替
+indent_size = 4
+# 每一个制表符在文件中显示的宽度
+tab_width = 4
+# 换行符风格
+end_of_line = crlf
+# 最大行宽
+max_line_length = 120
+# 是否在文末插入新行
+insert_final_newline = true
+# 是否为所有的行注释添加空格作分隔
+ij_any_line_comment_add_space = true
+# 是否在所有的逗号之后添加空格
+ij_any_space_after_comma = true
+# 是否在所有的逗号之前添加空格
+ij_any_space_before_comma = false
+# 是否强制在新的一行放置逗号
+ij_javascript_comma_on_new_line = false
+# 是否为JS脚本注释符号后添加空格
+ij_javascript_line_comment_add_space = true
+# 是否为TS脚本注释符号后添加空格
+ij_typescript_line_comment_add_space = true
+# 是否在空行保持缩进 (任意格式文件)
+ij_any_keep_indents_on_empty_lines = true
+# 是否移除行尾的所有空字符
+trim_trailing_whitespace = false
+
+# YML/YAML/TOML 文件配置
+[*.{yml,yaml,toml}]
+indent_style = space
+indent_size = 2
+
+# Markdown 文档配置 (覆盖 [*] 中的 trim_trailing_whitespace)
+# 理由：Markdown 的行尾两个空格是"硬换行"语法，有语义，禁止保存时裁剪
+[*.md]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+end_of_line = crlf
+insert_final_newline = true
+# 硬换行依赖行尾空格，故不裁剪
+trim_trailing_whitespace = false
+ij_any_keep_indents_on_empty_lines = true
+charset = utf-8
+
+# 强类型/编译型源文件配置 (覆盖 [*] 中的对应值)
+[*.{py,java,cs,c,h,vbs,sql}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = false
+ij_any_keep_indents_on_empty_lines = true
+charset = utf-8
+
+# BAT/CMD 脚本文件设置 (覆盖 [*] 中的对应值)
+# 故意不声明 charset：EditorConfig 不支持 GB18030/GBK，写 utf-8 会诱导编辑器按 UTF-8
+# 另存，从而损坏既有的 GBK/GB18030 脚本；编码约束由 AGENTS.md 与专用工具链负责
+[*.{bat,cmd}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = false
+ij_any_keep_indents_on_empty_lines = true
+
+# PowerShell 脚本文件设置 (覆盖 [*] 中的对应值)
+# 与 AGENTS.md 的 PS1 规范对齐：必须 UTF-8-with-BOM，且必须 CRLF
+[*.ps1]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = false
+ij_any_keep_indents_on_empty_lines = true
+charset = utf-8-bom
+
+# Shell/Bash 脚本文件设置
+[*.{sh,bash}]
+indent_style = tab
+indent_size = 4
+end_of_line = lf
+
+# Git 钩子脚本文件设置
+# 理由：Git 钩子由 sh 解释执行，换行符被翻成 CRLF 后 sh 会直接报错而无法执行
+[.githooks/*]
+indent_style = tab
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = false
+ij_any_keep_indents_on_empty_lines = true
+charset = utf-8

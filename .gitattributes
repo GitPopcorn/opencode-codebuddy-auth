@@ -1,1 +1,89 @@
-.githooks/commit-msg text eol=lf
+# 本文件的整体策略：
+#   1) 显式为每类文本文件声明 eol=crlf，使"入库 blob 的口径"与"工作区口径"一致，
+#      从而消除字节级验收 (如 md5/sha256/大小比对) 因换行符不同而产生的假阳性。
+#   2) 本机已设置 core.autocrlf=true，blob 存 LF、工作区存 CRLF；
+#      任何字节级校验前必须先归一化 EOL 再比对。
+#   3) *.sh / *.bash / .githooks/* 例外：Shell 脚本在 Unix 侧原生执行，强制 LF。
+#   4) 绝对不使用 working-tree-encoding：它是实验性特性，会引发大范围 diff。
+#   5) *.bat / *.cmd 的 GB18030 编码不由 git 管理 (见下方"配置文件自身"说明)，
+#      本文件只负责其换行符，不触碰字节编码。
+
+# 自动检测文本文件
+* text=auto
+
+# 明确指定各类脚本的换行符格式
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# 前端与打包产物源文件
+# NOTE 编译产物 [index.js] / [index.d.ts] 由 tsc 直接落在仓库根目录，同样按文本处理
+*.js   text eol=crlf
+*.mjs  text eol=crlf
+*.cjs  text eol=crlf
+*.ts   text eol=crlf
+*.tsx  text eol=crlf
+*.css  text eol=crlf
+*.html text eol=crlf
+
+# 配置与元数据文件
+*.json  text eol=crlf
+*.jsonc text eol=crlf
+*.xml   text eol=crlf
+*.yml   text eol=crlf
+*.yaml  text eol=crlf
+*.toml  text eol=crlf
+
+# 强类型/编译型源文件
+*.py    text eol=crlf
+*.java  text eol=crlf
+*.cs    text eol=crlf
+*.c     text eol=crlf
+*.h     text eol=crlf
+*.vbs   text eol=crlf
+*.sql   text eol=crlf
+
+# 文档与纯文本
+*.md    text eol=crlf
+*.txt   text eol=crlf
+
+# 二进制文件跳过转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.bmp  binary
+*.ico  binary
+*.svg  text
+*.exe  binary
+*.dll  binary
+*.so   binary
+*.zip  binary
+*.tar  binary
+*.gz   binary
+*.7z   binary
+*.rar  binary
+*.pdf  binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.vsix binary
+*.jar  binary
+*.class binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.tgz  binary
+
+# 配置文件自身
+# 注意：*.bat / *.cmd 的 GB18030/GBK 字节编码不由 git 管理，git 仅按 eol=crlf 处理其换行符。
+#      若需在仓库内外保持编码一致，请使用编码规范化工具链，而非 working-tree-encoding。
+.gitattributes text
+.editorconfig  text
+.gitignore     text
+
+# STEP 强制钩子脚本 LF，必须放在最后：git 以最后一条匹配规则为准
+.githooks/* text eol=lf
