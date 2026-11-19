@@ -138,6 +138,23 @@ body: "{}",
 - `config.command` 注入 `/codebuddy-login` 与 `/codebuddy-doctor`；`command.execute.before` 原地清空 `output.parts` 并中止会话
 - `client.tui.showToast` 给用户可见横幅 (fire-and-forget 加 2s 超时，绕开无 TUI 订阅时永久挂起)
 
+### 13. 回合级请求 ID —— 用量页按回合归并
+
+**问题现象**：CodeBuddy 账号用量页是**一请求一行**，同一轮用户提问触发的多次上游请求 (工具调用循环、思考重试) 全部各占一行，积分逐条列出，无法看出「这一轮花了多少」。
+
+**实测结论** (2026-11-19，真实探针打 `POST https://copilot.tencent.com/v2/chat/completions` 后查 `POST /billing/meter/get-user-request-usage`) ：
+
+1. 上游用量页按 **`X-Request-ID`** 归并计量记录 —— 同一 `X-Request-ID` 的多次请求合并成**一行**，积分**求和** (实测同 id 两次请求各 0.01 与 0.07 -> 用量页一行 0.08) ；不同 `X-Request-ID` 各自独立成行
+2. 归并**只认** `X-Request-ID` —— 与 `X-Conversation-Message-ID` / `X-B3-SpanId` / `X-Request-Trace-Id` / `b3` 是否变化**无关**
+3. 重复 `X-Request-ID` **不会**触发上游响应缓存或幂等短路 —— 两次请求仍各返回各自的新内容
+4. 补丁此前每请求都新生成 `X-Request-ID` (`buildAuthHeaders` 内 `const requestId = generateHex32();`) ，所以用量页一请求一行
+
+**实现方式**：新增回合键派生 —— `sha256(sessionID + "|" + 最后一条 user 消息下标)` 取前 16 字节 (32 位小写 hex) 作为 `X-Request-ID` 与 `X-Conversation-Request-ID` 的取值。官方客户端一次用户输入对应一个 ID；同一回合的工具循环只在该 user 消息之后追加 assistant / tool 消息，下标不变；用户发出下一条消息时最后一条 user 消息下标递增，派生值随之改变。派生必须用**净化前**的原始 `messages` 计算 —— 净化会丢弃空 assistant 消息，会让后面 user 消息的下标发生漂移。
+
+**开关**：`CODEBUDDY_TURN_REQUEST_ID=off` 退回「每请求新 ID」的旧行为 (默认启用) 。
+
+**边界**：历史被压缩后 user 消息下标漂移会把一个回合拆成两行 —— 属可接受退化；没有任何 user 消息时返回空串并退回每请求新 ID。
+
 ---
 
 ## 行为差异对照 (vs 上游)

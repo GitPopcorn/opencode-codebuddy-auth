@@ -29,7 +29,11 @@
 | `3.7.0` | 2026-11-18 | 可用 | 新增 `X-Device-Token`：动态发现本机 TuringShield 原生插件并自签令牌 (60s 缓存，失败即跳过)  |
 | `3.8.0` | 2026-11-18 | 可用 | 请求头对齐官方 IDE 构造规则 (补 `X-Trace-ID`、`X-Request-ID` 与 `X-Conversation-Request-ID` 同值、会话级稳定 `X-Conversation-ID`) ，新增 system prompt 指纹净化钩子 |
 | `3.9.0` | 2026-11-18 | 可用 | 凭据自愈层：启动期自检、`session.error` 捕获 401 自动续期、失效自动拉起浏览器重登、toast 提示、`/codebuddy-login` 与 `/codebuddy-doctor` 命令、账号 sidecar |
-| `4.0.0` | 2026-11-18 | **当前** | 渠道指纹修复：出站请求体按跨度改写净化 (覆盖 assistant 历史与 `reasoning_content`) ，品牌换 `CodeBuddyIDE/4.12.0`，补 `X-CodeBuddy-Request` 等官方头，设备令牌改环境变量开启 |
+| `4.0.0` | 2026-11-18 | 可用 | 渠道指纹修复：出站请求体按跨度改写净化 (覆盖 assistant 历史与 `reasoning_content`) ，品牌换 `CodeBuddyIDE/4.12.0`，补 `X-CodeBuddy-Request` 等官方头，设备令牌改环境变量开启 |
+| `4.0.1` | 2026-11-18 | 可用 | 指纹净化九项正确性修复 (**行为修复**，非新功能)：A1 拆出独立开关、请求体深拷贝、作用范围可配、工具入参 JSON 校验、空内容处理、日志防自污染、规则表合并、识别 2xx 错误体、新增黄金回归脚本 |
+| `4.2.0` | 2026-11-18 | 可用 | 按官方 CodeBuddy IDE 4.12.4 抓包对齐请求头：补客户端埋点头、版本号升到 4.12.4、恢复 `X-B3-ParentSpanId`、删除官方从不发送的冗余头、ID 形态改为 32 位小写 hex |
+| `4.2.1` | 2026-11-18 | 可用 | A2 注入块迁移：user 消息里的宿主指令块迁到 system 消息末尾，网关展示的提示词恢复成真实问题 |
+| `4.3.0` | 2026-11-19 | **当前** | 回合级请求 ID (用量页按回合归并) ：同一用户回合的多次上游请求复用同一个 `X-Request-ID`，用量页合并成一行、积分求和；`CODEBUDDY_TURN_REQUEST_ID=off` 可退回旧行为 |
 
 ---
 
@@ -140,6 +144,47 @@
 - 设备令牌改为**默认关闭** (`CODEBUDDY_DEVICE_TOKEN=on` 才发) ，与官方来源优先、取不到宁可不发的社区共识一致
 - 验证方式：被污染的 assistant 历史消息，经净化后由 `400 / 11128` 变为 `200` 加 SSE
 
+### 4.0.1 — 指纹净化九项正确性修复
+
+**行为修复**，非新功能 —— 补齐 v4.0.0 净化层的九处正确性问题：
+
+1. **A1 与净化开关解耦**：`CODEBUDDY_FINGERPRINT_SANITIZE=off` 只停用文本改写；首条消息必须是 `role:system` 由独立开关 `CODEBUDDY_FINGERPRINT_SYSTEM_FIRST=off` 控制
+2. **请求体深拷贝**：净化在副本上进行 —— 宿主传入的 `messages` 数组与消息对象绝不被就地改写 (此前浅拷贝共享同一数组引用)
+3. **作用范围可配**：`CODEBUDDY_FINGERPRINT_SCOPE=all|system-assistant`，默认 `system-assistant` —— 线上实测上游不扫描 `user` / `tool` 角色
+4. **工具入参保持合法 JSON**：`tool_calls[].function.arguments` 改写后校验，非法即回滚该字段，只记一条计数 warn
+5. **空内容处理**：system 内容被清空则换中性默认提示词；assistant 内容为空且无 `tool_calls` 则整条丢弃
+6. **日志防自污染**：上游错误体 (`11128` 与 `Illegal API invocation from an unapproved channel`) 绝不原样进日志 —— 宿主日志会被 agent 读回并重新触发同一错误；只记 HTTP 状态 + 固定分类标签 + 脱敏码 (`11128` -> `CHANNEL_REJECT`)
+7. **规则表合并**：原先分散的两张表 (prompt 6 条 + body 29 条) 合并为一张 `FINGERPRINT_RULES`，两个调用点各取子集；开关收敛为 `CODEBUDDY_FINGERPRINT_SANITIZE`，`CODEBUDDY_PROMPT_SANITIZE` 保留为废弃别名
+8. **识别 2xx + JSON 错误体**：上游偶尔用 HTTP 200 返回 JSON 错误 —— 此前逃过 `!response.ok` 分支从未被分类；现在按同一套分类记日志 (body 仍原样转发)
+9. **黄金回归脚本**：新增 `scripts/verify-fingerprint.mjs` (零依赖，纯 node) —— 每条内置规则一条精确输出用例，外加幂等、空内容、工具入参 JSON、作用域、开关、日志防自污染
+
+### 4.2.0 — 请求头对齐官方 CodeBuddy IDE 4.12.4
+
+按官方 CodeBuddy IDE 4.12.4 抓包逐条对齐出站请求头：
+
+- 补客户端埋点头 `monitor_promptpreparestarttime` / `monitor_httpsendtime` (两个 13 位毫秒时间戳) —— 修复用量页「请求 / 提示词」列恒空
+- `X-IDE-Version` / `X-Product-Version` / UA 首段统一升到 `4.12.4`
+- 恢复会话内恒定的 `X-B3-ParentSpanId` (16 位 hex)
+- 删除官方从不发送的冗余头：`X-CodeBuddy-Request` / `X-Product-Code` / `X-Private-Data` / `X-Agent-Purpose` / `X-Root-Request-ID` / `Origin` / `Referer`
+- ID 形态改为 32 位小写 hex (`X-Request-Trace-Id` 仍为 UUID v4) ，`X-Conversation-Message-ID` 不再与 `X-Request-ID` 同值
+- 会话维度 ID (`X-Conversation-ID` / `X-Trace-ID` / `X-B3-ParentSpanId`) 改由 `sha256(sessionID)` 稳定派生
+
+### 4.2.1 — A2 注入块迁移
+
+- **根因**：宿主会把 harness 指令块 (如 `<system-reminder>`) 塞进 `role:"user"` 的 content，网关却把**第一条 user 文本**记录成账号用量页的展示「提示词」，于是每次请求都显示同一段样板文字 (固定指纹，账号风险)
+- 修复：插件把这类注入块迁到 system 消息末尾，展示提示词恢复成真实问题
+- 标签可用 `CODEBUDDY_RELOCATE_TAGS` 覆盖 (逗号分隔) ，`off` / 空值停用整步
+
+### 4.3.0 — 回合级请求 ID (用量页按回合归并)
+
+- **实测结论** (2026-11-19) ：上游用量页按 `X-Request-ID` 归并计量记录 —— 同一 ID 的多次请求合并成**一行**、积分**求和**；不同 ID 各自独立成行
+- 归并**只认**这一个头 —— 与 `X-Conversation-Message-ID` / `X-B3-SpanId` / `X-Request-Trace-Id` / `b3` 是否变化无关；重复 ID **不会**触发上游响应缓存或幂等短路
+- 此前补丁每请求都新生成 `X-Request-ID`，所以用量页一请求一行
+- 改为按「回合键」派生：`sha256(sessionID + "|" + 最后一条 user 消息下标)` 取前 16 字节作为 `X-Request-ID` 与 `X-Conversation-Request-ID` 的取值 —— 同一回合的工具循环只在该 user 消息之后追加 assistant / tool 消息，下标不变；用户发下一条消息时下标递增
+- 派生必须用**净化前**的原始 `messages` 计算 (净化会丢弃空 assistant 消息，导致后面 user 消息下标漂移)
+- 开关 `CODEBUDDY_TURN_REQUEST_ID=off` 退回「每请求新 ID」的旧行为
+- 端到端验证：一次真实 OpenCode 回合 (工具调用循环 3 次上游请求) 在用量页合并成 1 行、积分求和
+
 ---
 
 ## 关键设计结论 (踩坑汇总)
@@ -160,6 +205,8 @@
 14. **`client.tui.showToast` 在无 TUI 订阅时永久挂起** —— 必须 fire-and-forget 并带超时
 15. **opencode 1.19.6 对命令总会强起一个 assistant turn** —— 需原地清空 `output.parts` (宿主复用同一数组引用) 并中止会话
 16. **`opencode run` 在无 stdin 重定向时会静默阻塞** —— 自动化验证须重定向 `NUL`
+17. **上游用量页按 `X-Request-ID` 归并计量记录** —— 同一 ID 的多次请求合并成一行、积分求和；只认这一个头，与 message-id / span / trace 是否变化无关；重复 ID 不触发响应缓存或幂等短路
+18. **回合级归并会丢失单请求粒度** —— 开启后用量页只剩「一回合一行的合计积分」，单次请求消耗不再可见；上游没有更细的视图，需要时用 `CODEBUDDY_TURN_REQUEST_ID=off` 临时退回每请求一行
 
 ## 排障速查
 
@@ -176,3 +223,4 @@
 | 对话 400 且 `code:11128` | 请求体命中渠道指纹；v4.0.0 起已按跨度改写净化，若仍出现需检查历史消息里是否残留指纹 |
 | 对话 400 且 `code:11101` | 非流式请求；插件已强制 `stream: true` |
 | 改了插件但行为没变 | Bun 模块缓存，必须重启 OpenCode 进程 |
+| 用量页同一回合出现多行 | 回合级归并被 `CODEBUDDY_TURN_REQUEST_ID=off` 关掉了，或回合键漂移 (会话历史被压缩导致 user 消息下标变化)；看插件日志的 `turn request id` 行，同一回合应只有一行 |

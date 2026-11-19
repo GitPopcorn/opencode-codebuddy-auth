@@ -61,6 +61,13 @@ node scripts/verify-fingerprint.mjs   # 指纹净化黄金回归测试 (零依�
 5. **command.execute.before** — 拦截 `/codebuddy-login` 与 `/codebuddy-doctor`，原地清空 `output.parts` 并中止会话 (宿主对任何命令都会强起一个 assistant turn)
 6. **experimental.chat.system.transform** — 按跨度改写 system prompt 中的第三方身份指纹
 
+### 回合级请求 ID (用量页归并)
+
+- 上游用量页按 `X-Request-ID` 归并计量记录 (2026-11-19 实测) ：同一 ID 的多次请求合并成**一行**、积分**求和**；不同 ID 各自独立成行
+- 本插件让**同一用户回合**内的多次上游请求复用同一个 `X-Request-ID`，于是一个回合在用量页上合并成一行
+- 回合键由 `sessionID` + 最后一条 user 消息下标 sha256 派生 (同一回合的工具循环只追加 assistant / tool 消息，下标不变) 
+- 开关 `CODEBUDDY_TURN_REQUEST_ID=off` 退回「每请求新 ID」的旧行为
+
 ### 凭据自愈与指纹净化
 
 - 启动期自检：无凭据或刷新失败 → 自动拉起浏览器重登 (`plugin/auth/state` → 浏览器 → 轮询 `plugin/auth/token`，`11217` 表示登录中) → 经 `client.auth.set` 落盘
@@ -81,6 +88,8 @@ node scripts/verify-fingerprint.mjs   # 指纹净化黄金回归测试 (零依�
 | `CODEBUDDY_FINGERPRINT_SANITIZE` | 开启 | 置 `off` 关闭**全部**指纹文本改写 (body + system prompt)  |
 | `CODEBUDDY_FINGERPRINT_SYSTEM_FIRST` | 开启 | 置 `off` 关闭 A1 (保证首条消息是 `role:system`) —— 与净化开关相互独立 |
 | `CODEBUDDY_FINGERPRINT_SCOPE` | `system-assistant` | `all` 改写全部 role；`system-assistant` 只改 system + assistant (工具入参始终改写)  |
+| `CODEBUDDY_RELOCATE_TAGS` | `system-reminder,user_info` | 逗号分隔的注入块标签名 (A2 迁移) ；置 `off` 或空值停用  |
+| `CODEBUDDY_TURN_REQUEST_ID` | 开启 | 置 `off` 退回每请求新 ID (关闭用量页回合归并)  |
 | `CODEBUDDY_DEVICE_TOKEN` | 关闭 | 置 `on` 才附带自签的 `X-Device-Token` |
 | `CODEBUDDY_TURING_NATIVE` | 自动发现 | 指定 TuringShield 原生插件路径 (文件或目录均可)  |
 | `CODEBUDDY_TURING_NATIVE_DISABLED` | 未设置 | 置 `1` 完全关闭设备令牌能力 |
