@@ -17,6 +17,8 @@
  *      b3 家族、客户端埋点时间戳、已删除的冗余头、版本号) 。
  *  10. A2 注入块迁移：user 里的 <system-reminder> / <user_info> 块搬到 system，
  *      用户提示词只留真实问题 (含开关、幂等、计数、数组形态) 。
+ *  11. 回合级请求 ID：同一用户回合的多次上游请求复用同一个 X-Request-ID，
+ *      上游用量页据此按回合归并成一行 (含派生规则、边界与开关) 。
  *
  * 依赖：只依赖仓库根目录的构建产物 index.js (零第三方运行时依赖) 。
  */
@@ -32,6 +34,10 @@ const {
   getFingerprintScope,
   CodeBuddyAuthPlugin,
   buildAuthHeadersForTest,
+  resolveTurnRequestId,
+  deriveTurnRequestId,
+  findLastUserMessageIndex,
+  isTurnRequestIdEnabled,
 } = mod;
 
 /** 断言失败收集器 */
@@ -893,6 +899,98 @@ async function runFailurePath(status, headers, body) {
   check("headers[X-Product-Version]", a1["X-Product-Version"], "4.12.4");
   check("headers[User-Agent]", a1["User-Agent"], "CodeBuddyIDE/4.12.4 CodeBuddy/4.12.4");
 
+  caseCount++;
+}
+
+// ============================================================================
+// 11. 回合级请求 ID (用量页按回合归并)
+// ----------------------------------------------------------------------------
+// 上游用量页按 X-Request-ID 归并计量记录 (2026-11-19 实测) ：
+// 同一 X-Request-ID 的多次请求合并成一行、积分求和；不同 X-Request-ID 各自成行。
+// 本组断言回合键的派生规则 (sessionID + 最后一条 user 消息下标) 与开关行为。
+// ============================================================================
+
+{
+  const HEX32 = /^[0-9a-f]{32}$/;
+  const envBackup = { ...process.env };
+  const setEnv = (key, value) => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
+
+  // 同一回合：工具循环只在该 user 消息之后追加 assistant / tool 消息
+  const body = [
+    { role: "system", content: "系统提示" },
+    { role: "user", content: "第一个问题" },
+    { role: "assistant", content: "第一个回答" },
+  ];
+  const bodyWithTool = [
+    ...body,
+    { role: "tool", content: "工具结果" },
+    { role: "assistant", content: "第二个回答" },
+  ];
+  // 下一回合：用户又发了一条 user 消息
+  const nextTurn = [...bodyWithTool, { role: "user", content: "第二个问题" }];
+
+  const idBase = resolveTurnRequestId("ses_a", body);
+  const idTool = resolveTurnRequestId("ses_a", bodyWithTool);
+  const idNext = resolveTurnRequestId("ses_a", nextTurn);
+  const idOtherSession = resolveTurnRequestId("ses_b", body);
+
+  // --- 同一回合稳定 ---
+  check("turn[same turn stable across tool loop]", idTool, idBase);
+
+  // --- 新回合不同 ---
+  checkTrue(
+    "turn[new turn differs]",
+    idNext !== idBase,
+    `id unchanged across turns: ${idBase}`,
+  );
+
+  // --- 跨会话不同 ---
+  checkTrue(
+    "turn[differs across sessions]",
+    idOtherSession !== idBase,
+    `id unchanged across sessions: ${idBase}`,
+  );
+
+  // --- 没有任何 user 消息 ---
+  check(
+    "turn[no user message returns empty]",
+    resolveTurnRequestId("ses_a", [{ role: "system", content: "只有系统提示" }]),
+    "",
+  );
+  check("turn[empty messages returns empty]", resolveTurnRequestId("ses_a", []), "");
+
+  // --- messages 非法 (非数组) ---
+  check("turn[null messages returns empty]", resolveTurnRequestId("ses_a", null), "");
+  check("turn[object messages returns empty]", resolveTurnRequestId("ses_a", { role: "user" }), "");
+
+  // --- ID 形态 ---
+  checkTrue(
+    "turn[id shape 32 lowercase hex]",
+    HEX32.test(idBase),
+    `actual: ${JSON.stringify(idBase)}`,
+  );
+
+  // --- 最后一条 user 消息下标 ---
+  check("turn[last user index]", findLastUserMessageIndex(body), 1);
+  check("turn[last user index with tool tail]", findLastUserMessageIndex(bodyWithTool), 1);
+  check("turn[last user index in next turn]", findLastUserMessageIndex(nextTurn), 5);
+  check("turn[last user index without user]", findLastUserMessageIndex([{ role: "system" }]), -1);
+  check("turn[last user index non-array]", findLastUserMessageIndex("not-an-array"), -1);
+
+  // --- 派生函数与解析函数一致 ---
+  check("turn[derive matches resolve]", deriveTurnRequestId("ses_a", 1), idBase);
+
+  // --- 开关 ---
+  setEnv("CODEBUDDY_TURN_REQUEST_ID", undefined);
+  check("turn[switch default on]", isTurnRequestIdEnabled(), true);
+  setEnv("CODEBUDDY_TURN_REQUEST_ID", "off");
+  check("turn[switch off]", isTurnRequestIdEnabled(), false);
+  setEnv("CODEBUDDY_TURN_REQUEST_ID", undefined);
+
+  process.env = envBackup;
   caseCount++;
 }
 

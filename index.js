@@ -290,6 +290,43 @@ function generateHex16() {
     globalThis.crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+/**
+ * 回合级请求 ID —— 同一用户回合内的多次上游请求共享同一个值。
+ *
+ * 上游用量页按 X-Request-ID 归并计量记录 (2026-11-19 实测：
+ * 同一 X-Request-ID 的多次请求合并成一行、积分求和；不同 X-Request-ID 各自成行；
+ * 与 X-Conversation-Message-ID / X-B3-SpanId / X-Request-Trace-Id 无关) 。
+ * 官方客户端一次用户输入对应一个 ID，本插件按「最后一条 user 消息下标」派生回合键：
+ * 同一回合的工具循环只在该 user 消息之后追加 assistant / tool 消息，下标不变；
+ * 用户发出下一条消息时最后一条 user 消息下标递增，派生值随之改变。
+ */
+export function deriveTurnRequestId(sessionId, lastUserIndex) {
+    const digest = createHash("sha256")
+        .update(`${sessionId || ""}|${lastUserIndex}`, "utf8")
+        .digest();
+    return digest.subarray(0, 16).toString("hex");
+}
+/** 取消息数组里最后一条 user 消息的下标；没有 user 消息返回 -1 */
+export function findLastUserMessageIndex(messages) {
+    if (!Array.isArray(messages))
+        return -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const item = messages[i];
+        if (item && item.role === "user")
+            return i;
+    }
+    return -1;
+}
+/**
+ * 解析回合级请求 ID：会话 ID + 最后一条 user 消息下标 -> 稳定的 32 位小写 hex。
+ * 没有任何 user 消息时返回空串，调用方退回「每请求新 ID」的旧行为。
+ */
+export function resolveTurnRequestId(sessionId, messages) {
+    const index = findLastUserMessageIndex(messages);
+    if (index < 0)
+        return "";
+    return deriveTurnRequestId(sessionId, index);
+}
 function deriveSessionScopedIds(sessionId) {
     const digest = createHash("sha256").update(sessionId, "utf8").digest();
     const conversationId = digest.subarray(0, 16).toString("hex");
@@ -313,7 +350,7 @@ function resolveSessionScopedIds(sessionId) {
     }
     return deriveSessionScopedIds(sid);
 }
-function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId) {
+function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId, requestIdOverride) {
     const tenantId = resolveTenantId(accessToken);
     const enterpriseId = resolveEnterpriseId(accessToken);
     const userId = resolveUserId(accessToken);
@@ -322,10 +359,10 @@ function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId) {
     const conversationId = scopedIds.conversationId;
     const traceId = scopedIds.traceId;
     const parentSpanId = scopedIds.parentSpanId;
-    // 请求维度 (每请求新生成) ：
+    // 请求维度 (回合级 ID 由调用方按用户回合传入并复用；否则每请求新生成) ：
     // X-Request-ID 与 X-Conversation-Request-ID 必须同值；
     // X-Conversation-Message-ID 必须是另一个独立的 32 位标识。
-    const requestId = generateHex32();
+    const requestId = requestIdOverride || generateHex32();
     let conversationMessageId = generateHex32();
     while (conversationMessageId === requestId) {
         conversationMessageId = generateHex32();
@@ -383,8 +420,8 @@ function buildAuthHeaders(accessToken, modelId, deviceToken, sessionId) {
  * 供外部脚本验证请求头构造 (不打印令牌内容) 。
  * 与插件内部走同一套 buildAuthHeaders 逻辑，保证验证的就是线上行为。
  */
-export function buildAuthHeadersForTest(accessToken, modelId, deviceToken, sessionId) {
-    return buildAuthHeaders(accessToken, modelId, deviceToken, sessionId);
+export function buildAuthHeadersForTest(accessToken, modelId, deviceToken, sessionId, requestIdOverride) {
+    return buildAuthHeaders(accessToken, modelId, deviceToken, sessionId, requestIdOverride);
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -761,6 +798,13 @@ export function isFingerprintSanitizeEnabled() {
  */
 export function isSystemFirstEnabled() {
     return !isSwitchOff(process.env.CODEBUDDY_FINGERPRINT_SYSTEM_FIRST);
+}
+/**
+ * 回合级请求 ID 开关：CODEBUDDY_TURN_REQUEST_ID=off 退回「每请求新 ID」的旧行为。
+ * 默认启用。
+ */
+export function isTurnRequestIdEnabled() {
+    return !isSwitchOff(process.env.CODEBUDDY_TURN_REQUEST_ID);
 }
 /**
  * 净化作用范围：CODEBUDDY_FINGERPRINT_SCOPE=all | system-assistant。
@@ -1843,7 +1887,11 @@ const REASONING_BATCH_CHARS = 400;
 //   v4.2.1 = A2 注入块迁移：user 消息里的宿主指令块 (默认 <system-reminder> /
 //            <user_info>) 迁到 system 消息末尾 —— 网关记录的展示提示词恢复成
 //            真实问题；可用 CODEBUDDY_RELOCATE_TAGS 覆盖标签，off / 空值停用
-const FORK_VERSION = "4.2.1";
+//   v4.3.0 = 回合级请求 ID (用量页按回合归并) ：同一用户回合的多次上游请求复用
+//            同一个 X-Request-ID (由 sessionID + 最后一条 user 消息下标 sha256 派生) ——
+//            实测上游用量页按该 ID 归并，一个回合合并成一行、积分求和；
+//            可用 CODEBUDDY_TURN_REQUEST_ID=off 退回每请求新 ID 的旧行为
+const FORK_VERSION = "4.3.0";
 const VERSION_TAG = `codebuddy-fork-v${FORK_VERSION}`;
 function buildReasoningChunk(reasoningText) {
     const rcObj = {
@@ -2903,6 +2951,14 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         const openaiRequest = JSON.parse(typeof body === "string"
                             ? body
                             : await new Response(body).text());
+                        // 回合级请求 ID —— 同一用户回合的多次上游请求共用一个 ID，
+                        // 上游用量页据此把一个回合的多次请求合并成一行 (积分求和) 。
+                        // 必须用**净化前**的原始 messages 计算：净化会丢弃空 assistant 消息，
+                        // 会让后面 user 消息的下标发生漂移。
+                        const turnRequestId = isTurnRequestIdEnabled()
+                            ? resolveTurnRequestId(currentSessionId, openaiRequest.messages)
+                            : "";
+                        log("debug", `[${VERSION_TAG}] turn request id: ${turnRequestId ? turnRequestId : "per-request (disabled)"}`);
                         const resolvedModel = resolveModel(openaiRequest.model);
                         if (!resolvedModel) {
                             throw new Error("未设置模型，请设置 CODEBUDDY_DEFAULT_MODEL 或在 OpenCode 选择模型");
@@ -2953,7 +3009,7 @@ export const CodeBuddyAuthPlugin = async (input) => {
                         const doRequest = async (token) => {
                             return fetch(`${resolvedServerUrl}${CONFIG.chatCompletionsPath}`, {
                                 method: "POST",
-                                headers: buildAuthHeaders(token, resolvedModel, deviceToken),
+                                headers: buildAuthHeaders(token, resolvedModel, deviceToken, currentSessionId, turnRequestId),
                                 body: JSON.stringify(requestBody),
                             });
                         };

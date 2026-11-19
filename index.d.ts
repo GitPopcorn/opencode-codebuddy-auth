@@ -11,10 +11,28 @@ export declare function formatModelDisplayName(rawName: string, fallbackId?: str
  */
 export declare function formatModelDisplayNameForTest(rawName: string, fallbackId?: string): string;
 /**
+ * 回合级请求 ID —— 同一用户回合内的多次上游请求共享同一个值。
+ *
+ * 上游用量页按 X-Request-ID 归并计量记录 (2026-11-19 实测：
+ * 同一 X-Request-ID 的多次请求合并成一行、积分求和；不同 X-Request-ID 各自成行；
+ * 与 X-Conversation-Message-ID / X-B3-SpanId / X-Request-Trace-Id 无关) 。
+ * 官方客户端一次用户输入对应一个 ID，本插件按「最后一条 user 消息下标」派生回合键：
+ * 同一回合的工具循环只在该 user 消息之后追加 assistant / tool 消息，下标不变；
+ * 用户发出下一条消息时最后一条 user 消息下标递增，派生值随之改变。
+ */
+export declare function deriveTurnRequestId(sessionId: string, lastUserIndex: number): string;
+/** 取消息数组里最后一条 user 消息的下标；没有 user 消息返回 -1 */
+export declare function findLastUserMessageIndex(messages: unknown): number;
+/**
+ * 解析回合级请求 ID：会话 ID + 最后一条 user 消息下标 -> 稳定的 32 位小写 hex。
+ * 没有任何 user 消息时返回空串，调用方退回「每请求新 ID」的旧行为。
+ */
+export declare function resolveTurnRequestId(sessionId: string, messages: unknown): string;
+/**
  * 供外部脚本验证请求头构造 (不打印令牌内容) 。
  * 与插件内部走同一套 buildAuthHeaders 逻辑，保证验证的就是线上行为。
  */
-export declare function buildAuthHeadersForTest(accessToken: string, modelId: string, deviceToken: string, sessionId: string): Record<string, string>;
+export declare function buildAuthHeadersForTest(accessToken: string, modelId: string, deviceToken: string, sessionId: string, requestIdOverride?: string): Record<string, string>;
 /** 净化作用范围：all = 全部 role；system-assistant = 只改 system + assistant */
 export type FingerprintScope = "all" | "system-assistant";
 /**
@@ -42,6 +60,11 @@ export declare function isFingerprintSanitizeEnabled(): boolean;
  * 与净化开关相互独立 —— 协议形态修正与文本改写是两件事。
  */
 export declare function isSystemFirstEnabled(): boolean;
+/**
+ * 回合级请求 ID 开关：CODEBUDDY_TURN_REQUEST_ID=off 退回「每请求新 ID」的旧行为。
+ * 默认启用。
+ */
+export declare function isTurnRequestIdEnabled(): boolean;
 /**
  * 净化作用范围：CODEBUDDY_FINGERPRINT_SCOPE=all | system-assistant。
  * 默认 system-assistant —— 线上实测 (2026-11-18) ：上游只扫描 system 与 assistant
