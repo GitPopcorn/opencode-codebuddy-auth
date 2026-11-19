@@ -1,0 +1,14 @@
+{
+	"schemaVersion": 1,
+	"id": "opencode-codebuddy-auth",
+	"enabled": true,
+	"excludeDirs": [],
+	"fixturePaths": [],
+	"exemptPaths": [],
+	"indentStyleOverrides": {},
+	"gofmtManaged": false,
+	"notes": [
+		"[*.bak] 备份文件已入库, 属仓库卫生问题, 由 [fmt-repo-hygiene] 报告 —— 这是刻意暴露的待整改项, 不用 [exemptPaths] 掩盖",
+		"旧配置 [fmt-profiles/opencode-codebuddy-auth.json] 的 27 条 [excludeDirs] 已按层重新分配: 产物与工具私有目录由 [collect.mjs] 的 [DEFAULT_EXCLUDE_DIRS] 地板层覆盖, [logs] 与 [tmp] 与 [.tmp] 与 [patches] 与 [bundles] 与 [_gsdata_] 由全局层 [~/.agents/fmt/.fmtconfig.json] 覆盖, 本项目无特有排除项故为空"
+	]
+}
