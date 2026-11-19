@@ -23,8 +23,10 @@
  * 依赖：只依赖仓库根目录的构建产物 index.js (零第三方运行时依赖) 。
  */
 
+/** 仓根构建产物, 测试只依赖它导出的公开能力 */
 const mod = await import("../index.js");
 
+/** 从产物中取出的待测函数与类 */
 const {
 	sanitizeFingerprintTextForTest,
 	sanitizeSystemPromptForTest,
@@ -42,15 +44,34 @@ const {
 
 /** 断言失败收集器 */
 const failures = [];
+
+/** 已执行的断言总数 */
 let checks = 0;
+
+/** 已注册的用例总数 */
 let caseCount = 0;
 
+/**
+ * 记录一条断言失败
+ * @param {string} name 断言名
+ * @param {string} detail 失败细节
+ * @return {void}
+ */
 function fail(name, detail) {
+	// STEP 累积失败, 统一到汇总阶段一次性输出
 	failures.push(`${name}\n    ${detail}`);
 	
 }
 
+/**
+ * 断言实际值严格等于期望值
+ * @param {string} name 断言名
+ * @param {*} actual 实际值
+ * @param {*} expected 期望值
+ * @return {void}
+ */
 function check(name, actual, expected) {
+	// STEP 计数后比较, 不等时记录差异
 	checks++;
 	if (actual !== expected) {
 		fail(name, `expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`);
@@ -59,7 +80,15 @@ function check(name, actual, expected) {
 	
 }
 
+/**
+ * 断言条件为真
+ * @param {string} name 断言名
+ * @param {*} condition 待判条件
+ * @param {string} [detail] 失败时的补充说明
+ * @return {void}
+ */
 function checkTrue(name, condition, detail) {
+	// STEP 计数后判定, 假值时记录
 	checks++;
 	if (! condition) { fail(name, detail || "condition was false"); }
 	
@@ -73,12 +102,16 @@ function checkTrue(name, condition, detail) {
  * @param {string} expected 期望输出
  */
 function addCase(id, fn, input, expected) {
+	// STEP 统一返回形态: 净化函数可能返回字符串或 {text}
 	caseCount++;
 	const apply = (text) => {
+		// STEP 净化函数可能返回字符串, 也可能返回 {text}
 		const out = fn(text);
 		return typeof out === "string" ? out : out.text;
 		
 	};
+	
+	// STEP 断言精确输出, 再断言二次净化不变 (幂等)
 	const first = apply(input);
 	check(`case[${id}] output`, first, expected);
 	const second = apply(first);
@@ -90,6 +123,7 @@ function addCase(id, fn, input, expected) {
 // 1. body 规则用例 (29 条 —— 与内置规则一一对应)
 // ============================================================================
 
+/** body 侧规则用例表, 每项为 [用例标识, 输入, 期望输出] */
 const BODY_CASES = [
 	// R1 固定短语表 (20 条)
 	["body-lit-ai-agent-harness",
@@ -184,6 +218,7 @@ const BODY_CASES = [
 ];
 
 for (const [id, input, expected] of BODY_CASES) {
+	// STEP body 侧统一走 sanitizeFingerprintTextForTest
 	addCase(id, sanitizeFingerprintTextForTest, input, expected);
 	
 }
@@ -192,6 +227,7 @@ for (const [id, input, expected] of BODY_CASES) {
 // 2. prompt 规则用例 (6 条 —— system-transform 钩子的规则子集)
 // ============================================================================
 
+/** prompt 侧规则用例表, 每项为 [用例标识, 输入, 期望输出] */
 const PROMPT_CASES = [
 	["prompt-ai-agent-harness",
 		"You are an AI agent powered by DeepSeek Harness.",
@@ -214,6 +250,7 @@ const PROMPT_CASES = [
 ];
 
 for (const [id, input, expected] of PROMPT_CASES) {
+	// STEP prompt 侧统一走 sanitizeSystemPromptForTest
 	addCase(id, sanitizeSystemPromptForTest, input, expected);
 	
 }
@@ -222,9 +259,11 @@ for (const [id, input, expected] of PROMPT_CASES) {
 // 3. 空内容处理 (system -> 中性默认提示词；assistant 无工具调用 -> 丢弃)
 // ============================================================================
 
+/** 净化后 system 为空时替换出的中性默认提示词 */
 const NEUTRAL_SYSTEM = "You are a helpful assistant.";
 
 {
+	// STEP system 只剩可剥除的指纹时, 必须落成中性默认提示词
 	const res = sanitizePayloadForTest({
 		messages: [{ role: "system", content: "cc_entrypoint=main.go" }],
 	});
@@ -499,7 +538,10 @@ const NEUTRAL_SYSTEM = "You are a helpful assistant.";
 // 宿主注入的 <system-reminder> / <user_info> 块必须让位给真实问题。
 // ============================================================================
 
+/** 待迁移的宿主注入块样例 */
 const RELOCATE_REMINDER = "<system-reminder>run the scheduler workflow</system-reminder>";
+
+/** 与注入块同段落的真实用户问题 */
 const RELOCATE_QUESTION = "这个函数为什么会返回空数组";
 
 {
@@ -716,9 +758,18 @@ const RELOCATE_QUESTION = "这个函数为什么会返回空数组";
 // 8. 日志防自污染：失败路径写出的日志里不得出现 11128 与上游原句
 // ============================================================================
 
+/** 断言失败时日志里绝不允许出现的上游错误码与原文 */
 const FORBIDDEN = ["11128", "Illegal API invocation"];
 
+/**
+ * 跑一次必定失败的响应路径, 收集插件写出的日志
+ * @param {number} status HTTP 状态码
+ * @param {Object} headers 响应头
+ * @param {string} body 响应体
+ * @return {Promise<Object>} { logs, response }
+ */
 async function runFailurePath(status, headers, body) {
+	// STEP 构造最小可用的假 input, 只保留插件会用到的 client 能力
 	const logs = [];
 	const fakeInput = {
 		directory: process.cwd(),
@@ -736,12 +787,15 @@ async function runFailurePath(status, headers, body) {
 			session: { abort: async () => {} },
 		},
 	};
+	
+	// STEP 装上假插件后替换 fetch, 让请求必定命中给定响应
 	const plugin = await CodeBuddyAuthPlugin(fakeInput);
 	const loader = await plugin.auth.loader(
 		async () => ({ type: "oauth", access: "dummy-access-token" }),
 		{},
 	);
 	
+	// STEP 暂存并替换全局 fetch, 结束后必须还原
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = async () => new Response(body, { status, headers });
 	try {
@@ -1045,6 +1099,7 @@ async function runFailurePath(status, headers, body) {
 // 汇总
 // ============================================================================
 
+/** 汇总用例数并据此决定退出码 */
 const totalCases = caseCount;
 if (failures.length > 0) {
 	console.error(`\n[FAIL] ${failures.length} check(s) failed out of ${checks} (${totalCases} cases)\n`);
